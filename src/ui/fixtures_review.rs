@@ -61,6 +61,8 @@ pub(crate) fn run(case: &str) -> Result<()> {
             "D4",
             "D5",
             "D6",
+            "Minimized",
+            "Startup",
         ]
         .contains(&case),
         "Unknown review case",
@@ -138,6 +140,50 @@ fn backend_case(case: &str, pid: i32, dir: &Path) -> Result<()> {
         targets.iter().all(|w| w.pid == pid && w.eligible),
         "Fixture windows are not eligible",
     )?;
+    if case == "Minimized" {
+        for target in &targets {
+            backend.minimize(target.id, true)?;
+        }
+        backend.probe_minimized_fixture(pid)?;
+        // Simulate launching AppDock after minimization: no cached handles.
+        let mut backend = MacBackend::new();
+        backend.update_apps(vec![App {
+            pid,
+            name: "Review fixture".into(),
+            bundle: "dev.appdock.review".into(),
+        }]);
+        let minimized = backend.discover()?;
+        println!(
+            "Minimized discovery: {} windows, {} eligible",
+            minimized.len(),
+            minimized.iter().filter(|w| w.eligible).count()
+        );
+        require(
+            minimized.len() == targets.len() && minimized.iter().all(|w| w.eligible),
+            "Minimized windows disappeared from eligible picker results",
+        )?;
+        let mut engine = Engine::new(backend, Workspace::default());
+        let window = &minimized[0];
+        let id = engine.attach(None, window)?;
+        require(
+            engine.live[&id].original.minimized,
+            "Original minimized state was not captured",
+        )?;
+        engine.switch(id)?;
+        require(
+            !engine.backend.state(window.id)?.minimized,
+            "Added window stayed minimized",
+        )?;
+        engine.release(id)?;
+        require(
+            engine.backend.state(window.id)?.minimized,
+            "Release lost original minimized state",
+        )?;
+        return Ok(());
+    }
+    if case == "Startup" {
+        return startup_case(pid, dir, backend);
+    }
     if case == "A3" || case == "A6" {
         return worker_case(case, pid, backend, &targets);
     }
@@ -424,6 +470,88 @@ fn worker_case(case: &str, pid: i32, backend: MacBackend, targets: &[WindowInfo]
     Ok(())
 }
 
+fn startup_case(pid: i32, dir: &Path, mut backend: MacBackend) -> Result<()> {
+    send_target(dir, "single")?;
+    let windows = backend.discover()?;
+    require(windows.len() == 1, "Startup fixture needs one window")?;
+    let window = windows[0].id;
+    backend.minimize(window, true)?;
+    let rule = StartupApp {
+        bundle: "dev.appdock.review".into(),
+        name: "Review fixture".into(),
+    };
+    let area = Rect {
+        x: 380.,
+        y: 220.,
+        width: 1100.,
+        height: 720.,
+    };
+    let mut saved = Workspace {
+        geometry: area,
+        ..Workspace::default()
+    };
+    saved.set_startup_app(rule.clone(), true);
+    persistence::save(&persistence::path(), &saved)?;
+    let launch = |workspace: Workspace| {
+        let client = worker::start(workspace);
+        client.send(Command::Resize(area, area));
+        client.send(Command::Apps(vec![App {
+            pid,
+            name: "Review fixture".into(),
+            bundle: "dev.appdock.review".into(),
+        }]));
+        client.send(Command::Discover);
+        client
+    };
+    let client = launch(persistence::load_for_launch(&persistence::path())?);
+    let attached = wait_snapshot(&client, |s| s.live.len() == 1 && s.selected.is_some())?;
+    require(
+        !backend.state(window)?.minimized,
+        "Startup did not restore minimized window",
+    )?;
+    client.send(Command::Release(attached.live[0].0));
+    wait_snapshot(&client, |s| s.live.is_empty() && s.restore_pending == 0)?;
+    require(
+        backend.state(window)?.minimized,
+        "Startup release did not restore original minimization",
+    )?;
+    client.send(Command::Discover);
+    std::thread::sleep(Duration::from_millis(200));
+    require(
+        client.snapshot.lock().unwrap().live.is_empty(),
+        "Periodic discovery reattached a released startup window",
+    )?;
+    client.send(Command::Quit);
+    wait_snapshot(&client, |s| s.stopped)?;
+    let next = persistence::load_for_launch(&persistence::path())?;
+    require(
+        next.startup_apps == vec![rule.clone()],
+        "Release/quit lost startup preference",
+    )?;
+    let client = launch(next);
+    wait_snapshot(&client, |s| s.live.len() == 1 && s.selected.is_some())?;
+    client.send(Command::SetStartupApp(rule, false));
+    wait_snapshot(&client, |s| s.workspace.startup_apps.is_empty())?;
+    client.send(Command::Quit);
+    wait_snapshot(&client, |s| s.stopped)?;
+    let client = launch(persistence::load_for_launch(&persistence::path())?);
+    wait_snapshot(&client, |s| s.windows.len() == 1 && s.trusted)?;
+    require(
+        client.snapshot.lock().unwrap().live.is_empty(),
+        "Disabled startup rule still attached a window",
+    )?;
+    client.send(Command::Quit);
+    wait_snapshot(&client, |s| s.stopped)?;
+    require(
+        backend.state(window)?.minimized,
+        "Final startup fixture restoration changed original state",
+    )?;
+    println!(
+        "Startup config passed: restored minimized app on two launches, retained preference through release/quit, skipped rediscovery, and honored disabling"
+    );
+    Ok(())
+}
+
 fn backdrop_lifetime(m: MainThreadMarker, app: &NSApplication) -> Result<()> {
     let anchor = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -506,7 +634,7 @@ fn rendered_selection(m: MainThreadMarker, app: &NSApplication) -> Result<()> {
         view.cacheDisplayInRect_toBitmapImageRep(bounds, &bitmap);
         // Active underline and inactive surface must differ in the rendered view.
         let scale = bitmap.pixelsWide() as f64 / bounds.size.width;
-        let row = bitmap.pixelsHigh() - (scale as isize).max(1);
+        let row = bitmap.pixelsHigh() - ((4. * scale) as isize).max(1);
         let left = bitmap
             .colorAtX_y((80. * scale) as isize, row)
             .ok_or("No left pixel")?;
@@ -603,6 +731,10 @@ pub(crate) fn targets() -> Result<()> {
                 }
                 "close" => {
                     windows[0].close();
+                }
+                "single" => {
+                    windows[1].close();
+                    windows[2].close();
                 }
                 "exit" => {
                     std::fs::write(dir.join("ack"), "ok").map_err(|e| e.to_string())?;

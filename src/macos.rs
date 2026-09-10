@@ -82,6 +82,43 @@ impl Ax<'_> {
         )
         .map_err(|e| e.context(context))
     }
+    fn capabilities(
+        &self,
+        root: &AXUIElement,
+        element: &AXUIElement,
+        strict: bool,
+    ) -> Result<WindowCapabilities> {
+        let mut actions = std::ptr::null();
+        let result = self.request(element, "Copy actions", || unsafe {
+            check(element.copy_action_names(NonNull::from(&mut actions)))
+        });
+        let actions = NonNull::new(actions.cast_mut())
+            .map(|p| unsafe { CFRetained::<CFArray<CFString>>::from_raw(p.cast()) });
+        let available = if strict {
+            result?;
+            true
+        } else {
+            crate::native_ops::optional(result)?.is_some()
+        };
+        let raise =
+            available && actions.is_some_and(|a| a.iter().any(|s| s.to_string() == "AXRaise"));
+        let settable = |e: &AXUIElement, name| -> Result<bool> {
+            let result = self.settable(e, name);
+            if strict {
+                result
+            } else {
+                Ok(crate::native_ops::optional(result)?.unwrap_or(false))
+            }
+        };
+        Ok(WindowCapabilities {
+            frontmost: settable(root, "AXFrontmost")?,
+            minimize: settable(element, "AXMinimized")?,
+            position: settable(element, "AXPosition")?,
+            size: settable(element, "AXSize")?,
+            main: settable(element, "AXMain")?,
+            raise,
+        })
+    }
     fn optional_attr(&self, e: &AXUIElement, name: &str) -> Result<Option<CFRetained<CFType>>> {
         let mut value = std::ptr::null();
         let code = self.request(e, name, || unsafe {
@@ -295,6 +332,27 @@ impl MacBackend {
     pub fn update_apps(&mut self, apps: Vec<App>) {
         self.apps = apps;
     }
+    pub fn probe_minimized_fixture(&self, pid: i32) -> Result<()> {
+        let root = unsafe { AXUIElement::new_application(pid) };
+        let windows = AX.array(&root, "AXWindows")?;
+        println!("AXWindows count={}", windows.len());
+        for element in windows {
+            println!(
+                "role={:?} subrole={:?} minimized={:?} state={:?}",
+                AX.string(&element, "AXRole"),
+                AX.string(&element, "AXSubrole"),
+                AX.boolean(&element, "AXMinimized"),
+                AX.state(&element)
+            );
+            for attribute in ["AXPosition", "AXSize", "AXMinimized", "AXMain"] {
+                println!(
+                    "{attribute} settable={:?}",
+                    AX.settable(&element, attribute)
+                );
+            }
+        }
+        Ok(())
+    }
     pub fn discover_current(&mut self, current: impl Fn() -> bool) -> Result<Vec<WindowInfo>> {
         if !self.trusted() {
             return Err(BackendError::new(
@@ -317,11 +375,15 @@ impl MacBackend {
             };
             for element in windows {
                 ax.checkpoint()?;
-                if crate::native_ops::optional(ax.string(&element, "AXSubrole"))?
-                    .flatten()
-                    .as_deref()
-                    != Some("AXStandardWindow")
-                {
+                let role = crate::native_ops::optional(ax.string(&element, "AXRole"))?.flatten();
+                if role.as_deref() != Some("AXWindow") {
+                    continue;
+                }
+                let subrole =
+                    crate::native_ops::optional(ax.string(&element, "AXSubrole"))?.flatten();
+                let state = crate::native_ops::optional(ax.state(&element))?;
+                let minimized = state.is_some_and(|s| s.minimized);
+                if !discoverable_window(role.as_deref(), subrole.as_deref(), minimized) {
                     continue;
                 }
                 let existing = self
@@ -334,22 +396,7 @@ impl MacBackend {
                     next += 1;
                     id
                 });
-                let mut actions = std::ptr::null();
-                let action_result = ax.request(&element, "Copy actions", || unsafe {
-                    check(element.copy_action_names(NonNull::from(&mut actions)))
-                });
-                let actions = NonNull::new(actions.cast_mut())
-                    .map(|p| unsafe { CFRetained::<CFArray<CFString>>::from_raw(p.cast()) });
-                let raise = crate::native_ops::optional(action_result)?.is_some()
-                    && actions.is_some_and(|a| a.iter().any(|s| s.to_string() == "AXRaise"));
-                let state = crate::native_ops::optional(ax.state(&element))?;
-                let mut eligible = crate::native_ops::optional(ax.settable(&root, "AXFrontmost"))?
-                    .unwrap_or(false)
-                    && raise;
-                for name in ["AXPosition", "AXSize", "AXMinimized", "AXMain"] {
-                    eligible &=
-                        crate::native_ops::optional(ax.settable(&element, name))?.unwrap_or(false);
-                }
+                let capabilities = ax.capabilities(&root, &element, false)?;
                 let info = WindowInfo {
                     id,
                     pid: app.pid,
@@ -365,7 +412,8 @@ impl MacBackend {
                         .flatten()
                         .filter(|s| !s.is_empty()),
                     },
-                    eligible: eligible && state.is_some_and(|s| !s.fullscreen && !s.modal),
+                    eligible: state.is_some_and(|s| capabilities.can_attach(s)),
+                    minimized,
                 };
                 let number = self.entries.get(&id).and_then(|e| e.number);
                 staged.push((
@@ -490,6 +538,21 @@ impl WindowBackend for MacBackend {
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
         self.watched.insert(id);
+        Ok(())
+    }
+    fn validate_restored_window(&self, id: WindowId) -> Result<()> {
+        let entry = self.entry(id)?;
+        let state = AX.state(&entry.element)?;
+        let role = AX.string(&entry.element, "AXRole")?;
+        let subrole = AX.string(&entry.element, "AXSubrole")?;
+        if state.minimized
+            || !discoverable_window(role.as_deref(), subrole.as_deref(), false)
+            || !AX
+                .capabilities(&entry.app, &entry.element, true)?
+                .can_attach(state)
+        {
+            return Err("This restored window does not support docking".into());
+        }
         Ok(())
     }
     fn focus(&mut self, id: WindowId) -> Result<()> {
@@ -665,6 +728,7 @@ mod tests {
                         identifier: None,
                     },
                     eligible: true,
+                    minimized: false,
                 },
             },
         );

@@ -18,6 +18,7 @@ pub(super) struct FixtureState {
     pub(super) fixture_reveal_tested: bool,
     pub(super) fixture_reveal_ordered: bool,
     pub(super) fixture_keyboard_ready: bool,
+    pub(super) startup_menu_stage: u8,
 }
 impl Drop for FixtureState {
     fn drop(&mut self) {
@@ -363,6 +364,58 @@ impl Delegate {
                             u.fixture.dock_test_tick = count;
                             return None;
                         }
+                        if u.fixture.startup_menu_stage < 2 {
+                            let mut menu_snapshot = s.clone();
+                            let identity = &s.workspace.tabs[0].identity.bundle;
+                            let bundle = if identity.is_empty() {
+                                "dev.appdock.fixture"
+                            } else {
+                                identity.as_str()
+                            };
+                            // CLI fixture children have no app bundle. Supply their
+                            // disposable identity to exercise the real menu action.
+                            for window in &mut menu_snapshot.windows {
+                                if u.fixture
+                                    .fixture_child
+                                    .as_ref()
+                                    .is_some_and(|child| child.id() as i32 == window.pid)
+                                {
+                                    window.identity.bundle = bundle.to_owned();
+                                }
+                            }
+                            self.update_startup_menu(&menu_snapshot);
+                            let enabled = s
+                                .workspace
+                                .startup_apps
+                                .iter()
+                                .any(|app| app.bundle == bundle);
+                            let stage = u.fixture.startup_menu_stage;
+                            if (stage == 0 && !enabled) || (stage == 1 && enabled) {
+                                let item = self
+                                    .ivars()
+                                    .startup_menu
+                                    .get()
+                                    .unwrap()
+                                    .itemArray()
+                                    .iter()
+                                    .find(|item| {
+                                        item.representedObject()
+                                            .and_then(|o| o.downcast::<NSString>().ok())
+                                            .is_some_and(|s| s.to_string() == bundle)
+                                    })
+                                    .expect("Startup app menu item missing");
+                                u.fixture.startup_menu_stage += 1;
+                                drop(b);
+                                unsafe {
+                                    let _: () = msg_send![self,toggleStartupApp:&*item];
+                                }
+                                return None;
+                            }
+                            return None;
+                        }
+                        if !s.workspace.startup_apps.is_empty() {
+                            return None;
+                        }
                         if !u.fixture.fixture_rename_tested {
                             if !u.fixture.fixture_rename_started {
                                 u.fixture.fixture_rename_started = true;
@@ -403,6 +456,9 @@ impl Delegate {
                                 }
                             }
                             sync_selection(u, s);
+                            println!(
+                                "Startup app menu toggle persisted and cleared the selected app rule"
+                            );
                             println!(
                                 "A2 snapshot update changed rendered selection and retained open rename target"
                             );
@@ -529,6 +585,22 @@ impl Delegate {
             .downcast::<RenameFieldEditor>()
             .expect("Wrong rename field editor");
         let app = NSApplication::sharedApplication(self.mtm());
+        let foreground = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|a| a.processIdentifier());
+        let child = self.ivars().ui.borrow().as_ref().and_then(|u| {
+            u.fixture
+                .fixture_child
+                .as_ref()
+                .map(|child| child.id() as i32)
+        });
+        println!(
+            "Fixture keyboard context: active={}, key_window={}, foreground_manager={}, foreground_child={}",
+            app.isActive(),
+            field.window().is_some_and(|w| w.isKeyWindow()),
+            foreground == Some(std::process::id() as i32),
+            foreground == child
+        );
         assert!(
             app.isActive(),
             "AppDock did not take keyboard focus for renaming"

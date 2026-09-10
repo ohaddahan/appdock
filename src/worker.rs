@@ -38,6 +38,8 @@ pub enum Command {
     Apps(Vec<App>),
     Discover,
     Attach(Option<TabId>, WindowId),
+    AutoAttach(WindowId),
+    SetStartupApp(StartupApp, bool),
     Switch(TabId, u64),
     Resize(Rect, Rect),
     Rename(TabId, String),
@@ -190,7 +192,14 @@ impl Client {
         self.pointer_down.store(down, Ordering::Relaxed);
     }
     pub fn send(&self, c: Command) {
-        if matches!(c, Command::Pause | Command::Quit | Command::Release(_)) {
+        if matches!(
+            c,
+            Command::Pause
+                | Command::Quit
+                | Command::Release(_)
+                | Command::Attach(..)
+                | Command::SetStartupApp(..)
+        ) {
             self.generation.fetch_add(1, Ordering::SeqCst);
             self.requested_tab.lock().unwrap().take();
         }
@@ -273,11 +282,32 @@ pub fn start(workspace: Workspace) -> Client {
         let mut next_observe = Instant::now();
         let mut save_after: Option<Instant> = None;
         let mut geometry_revision = 0;
+        let mut startup = crate::startup::Startup::new(engine.workspace.startup_apps.clone());
+        let mut discovery_complete = false;
         loop {
             let deadline = save_after.map_or(next_observe, |t| t.min(next_observe));
             let command = c
                 .mailbox
-                .receive(deadline.saturating_duration_since(Instant::now()));
+                .receive(if startup.has_pending() {
+                    Duration::ZERO
+                } else {
+                    deadline.saturating_duration_since(Instant::now())
+                })
+                .or_else(|| startup.next().map(Command::AutoAttach));
+            if matches!(
+                command,
+                Some(
+                    Command::Attach(..)
+                        | Command::SetStartupApp(..)
+                        | Command::Switch(..)
+                        | Command::Release(_)
+                        | Command::Pause
+                        | Command::Quit
+                        | Command::EditingBarrier(_)
+                )
+            ) {
+                startup.cancel();
+            }
             let completing_switch = match &command {
                 Some(Command::Switch(id, generation)) => Some((*id, *generation)),
                 _ => None,
@@ -292,7 +322,11 @@ pub fn start(workspace: Workspace) -> Client {
             let mut stopped = false;
             let result: Result<()> = match command {
                 Some(
-                    Command::Attach(..) | Command::Switch(..) | Command::Raise | Command::Resume,
+                    Command::Attach(..)
+                    | Command::AutoAttach(_)
+                    | Command::Switch(..)
+                    | Command::Raise
+                    | Command::Resume,
                 ) if quitting => Ok(()),
                 Some(Command::ReadBadges(pid, targets)) => {
                     if !c.pointer_down.load(Ordering::Relaxed)
@@ -327,7 +361,41 @@ pub fn start(workspace: Workspace) -> Client {
                         })
                         .map(|w| {
                             windows = w;
+                            discovery_complete = true;
                         })
+                }
+                Some(Command::SetStartupApp(app, enabled)) => {
+                    dirty = true;
+                    engine.workspace.set_startup_app(app, enabled);
+                    Ok(())
+                }
+                Some(Command::AutoAttach(id)) => {
+                    let epoch = c.generation.load(Ordering::SeqCst);
+                    let current = || {
+                        epoch == c.generation.load(Ordering::SeqCst)
+                            && !c.focus_suspended.load(Ordering::SeqCst)
+                            && !c.pointer_down.load(Ordering::Relaxed)
+                            && !c.mailbox.priority_pending()
+                    };
+                    if engine.paused.is_none() && current() {
+                        match windows.iter().find(|w| w.id == id) {
+                            Some(window)
+                                if !engine
+                                    .live
+                                    .values()
+                                    .any(|a| engine.backend.same_window(a.window, id)) =>
+                            {
+                                dirty = true;
+                                engine
+                                    .attach(None, window)
+                                    .and_then(|tab| engine.switch_current(tab, current))
+                            }
+                            _ => Ok(()),
+                        }
+                    } else {
+                        startup.cancel();
+                        Ok(())
+                    }
                 }
                 Some(Command::Attach(tab, id)) => {
                     dirty = true;
@@ -430,6 +498,21 @@ pub fn start(workspace: Workspace) -> Client {
                 }
             } else if dirty {
                 status = "Ready".into();
+            }
+            if discovery_complete
+                && geometry.is_some()
+                && !quitting
+                && engine.paused.is_none()
+                && !c.focus_suspended.load(Ordering::SeqCst)
+                && !c.pointer_down.load(Ordering::Relaxed)
+            {
+                startup.resolve(
+                    &windows,
+                    &engine.live.values().map(|a| a.window).collect::<Vec<_>>(),
+                );
+            }
+            if let Some(notice) = startup.notice() {
+                status = notice;
             }
             let notes = std::mem::take(&mut engine.restoration_notes);
             if !notes.is_empty() {

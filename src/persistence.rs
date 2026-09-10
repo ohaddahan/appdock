@@ -33,6 +33,15 @@ pub fn load(path: &Path) -> Result<Workspace> {
     {
         return Err("Invalid workspace geometry or duplicate tab IDs; file preserved.".into());
     }
+    if workspace.startup_apps.iter().enumerate().any(|(i, app)| {
+        app.bundle.trim().is_empty()
+            || app.bundle != app.bundle.trim()
+            || workspace.startup_apps[..i]
+                .iter()
+                .any(|other| other.bundle == app.bundle)
+    }) {
+        return Err("Invalid or duplicate startup app rules; file preserved.".into());
+    }
     Ok(workspace)
 }
 /// Each launch is a new attachment session. Retain preferences, never live tabs.
@@ -120,6 +129,38 @@ mod tests {
         assert_eq!(fresh.next_shortcut, saved.next_shortcut);
         assert!(load(&p).unwrap().tabs.is_empty());
         assert!(load_for_launch(&p).unwrap().tabs.is_empty());
+        fs::remove_file(p).unwrap();
+    }
+    #[test]
+    fn startup_rules_survive_release_and_fresh_launch_with_legacy_json_compatibility() {
+        let p = std::env::temp_dir().join(format!("appdock-startup-{}.json", std::process::id()));
+        let legacy = serde_json::to_value(Workspace::default()).unwrap();
+        assert!(legacy.get("startup_apps").is_none());
+        fs::write(&p, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let mut w = load_for_launch(&p).unwrap();
+        assert!(w.startup_apps.is_empty());
+        let rule = StartupApp {
+            bundle: "com.example.app".into(),
+            name: "Example".into(),
+        };
+        w.set_startup_app(rule.clone(), true);
+        w.set_startup_app(rule.clone(), true);
+        assert_eq!(w.startup_apps.len(), 1);
+        w.tabs.push(SavedTab {
+            id: 1,
+            name: "Example".into(),
+            identity: Identity {
+                bundle: rule.bundle.clone(),
+                identifier: None,
+            },
+        });
+        save(&p, &w).unwrap();
+        let fresh = load_for_launch(&p).unwrap();
+        assert!(fresh.tabs.is_empty());
+        assert_eq!(fresh.startup_apps, vec![rule.clone()]);
+        w.set_startup_app(rule, false);
+        save(&p, &w).unwrap();
+        assert!(load_for_launch(&p).unwrap().startup_apps.is_empty());
         fs::remove_file(p).unwrap();
     }
 }

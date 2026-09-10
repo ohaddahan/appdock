@@ -1,0 +1,1 @@
+Native rename regression passed: AppDock owns keyboard focus, Ctrl+A/Cmd+A select all, typing, commit and cancel

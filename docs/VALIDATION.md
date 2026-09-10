@@ -241,3 +241,11 @@ APPDOCK_DATA_DIR="$(mktemp -d /tmp/appdock-review.XXXXXX)" target/debug/appdock 
 ```
 
 The runner only allows disposable fixtures; it does not run the historical Discord/Telegram smoke modes. Missing Accessibility yields exit code 2 and a **prerequisite failure**, including for cases that could otherwise appear to pass without exercising native control. Existing smoke command names remain unchanged.
+
+## Startup configuration, tab styling, and minimized discovery — 2026-09-10
+
+The new baseline is **71 passing deterministic tests**, with formatting, strict Clippy, locked build, and Rust 1.95 checks passing. Startup apps can be selected through **AppDock → Auto-add at Startup**; choices survive release, quit, and relaunch. Multiple-window apps are left for manual selection. Tabs now have stronger boundaries and active styling.
+
+A failing native reproduction found ordinary minimized windows exposing an `AXDialog` subrole and read-only `AXMain`. Discovery now includes these minimized windows and validates full docking capabilities after restoring them. Native tests cover discovery with fresh handles, startup across repeated launches, restoring original minimization, disabling saved rules, and the actual menu toggle.
+
+See [the detailed feature validation](STARTUP-AND-MINIMIZED-WINDOWS.md) for before/after evidence, test manifests, and the retained intermittent picker-focus failure. WhatsApp/Spotify and other existing user windows were not changed. No installed app or deployment was modified.

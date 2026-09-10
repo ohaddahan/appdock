@@ -74,6 +74,11 @@ pub struct SavedTab {
     pub name: String,
     pub identity: Identity,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartupApp {
+    pub bundle: String,
+    pub name: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     pub version: u32,
@@ -81,6 +86,8 @@ pub struct Workspace {
     pub tabs: Vec<SavedTab>,
     pub next_shortcut: String,
     pub previous_shortcut: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub startup_apps: Vec<StartupApp>,
 }
 impl Default for Workspace {
     fn default() -> Self {
@@ -90,6 +97,15 @@ impl Default for Workspace {
             tabs: vec![],
             next_shortcut: "Control+Alt+Super+ArrowRight".into(),
             previous_shortcut: "Control+Alt+Super+ArrowLeft".into(),
+            startup_apps: vec![],
+        }
+    }
+}
+impl Workspace {
+    pub fn set_startup_app(&mut self, app: StartupApp, enabled: bool) {
+        self.startup_apps.retain(|rule| rule.bundle != app.bundle);
+        if enabled && !app.bundle.trim().is_empty() {
+            self.startup_apps.push(app);
         }
     }
 }
@@ -101,6 +117,7 @@ pub struct WindowInfo {
     pub title: String,
     pub identity: Identity,
     pub eligible: bool,
+    pub minimized: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowState {
@@ -139,6 +156,15 @@ pub trait WindowBackend {
     }
     fn minimize(&mut self, id: WindowId, value: bool) -> Result<()>;
     fn focus(&mut self, id: WindowId) -> Result<()>;
+    /// Minimized windows can temporarily omit normal docking capabilities.
+    /// Validate after restoring, before moving or focusing the target.
+    fn validate_restored_window(&self, id: WindowId) -> Result<()> {
+        let state = self.state(id)?;
+        if state.minimized || state.fullscreen || state.modal {
+            return Err("Window cannot be docked after restoring".into());
+        }
+        Ok(())
+    }
     fn events(&mut self) -> Vec<BackendEvent>;
     fn watch(&mut self, _id: WindowId, _enabled: bool) {}
     fn restore(&mut self, id: WindowId, state: WindowState) -> Result<()> {
@@ -389,5 +415,77 @@ mod review_tests {
             selection_for_actions(Some(2), Some(1), &tabs, &[(1, 10), (2, 20)]),
             Some(1)
         );
+    }
+}
+
+/// AppKit can report ordinary minimized windows as AXDialog. Only admit that
+/// transient subrole when actually minimized; revalidate after restoring.
+pub fn discoverable_window(role: Option<&str>, subrole: Option<&str>, minimized: bool) -> bool {
+    role == Some("AXWindow")
+        && (subrole == Some("AXStandardWindow") || (minimized && subrole == Some("AXDialog")))
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WindowCapabilities {
+    pub frontmost: bool,
+    pub minimize: bool,
+    pub position: bool,
+    pub size: bool,
+    pub main: bool,
+    pub raise: bool,
+}
+impl WindowCapabilities {
+    pub fn can_attach(self, state: WindowState) -> bool {
+        state.frame.valid()
+            && !state.fullscreen
+            && !state.modal
+            && self.frontmost
+            && self.minimize
+            && (state.minimized || (self.position && self.size && self.main && self.raise))
+    }
+}
+#[cfg(test)]
+mod minimized_tests {
+    use super::*;
+    #[test]
+    fn minimized_standard_windows_can_have_a_dialog_subrole_and_deferred_controls() {
+        let state = WindowState {
+            frame: Rect::default(),
+            minimized: true,
+            fullscreen: false,
+            modal: false,
+        };
+        let caps = WindowCapabilities {
+            frontmost: true,
+            minimize: true,
+            ..Default::default()
+        };
+        assert!(discoverable_window(
+            Some("AXWindow"),
+            Some("AXDialog"),
+            true
+        ));
+        assert!(caps.can_attach(state));
+        assert!(!caps.can_attach(WindowState {
+            minimized: false,
+            ..state
+        }));
+        assert!(!caps.can_attach(WindowState {
+            modal: true,
+            ..state
+        }));
+        assert!(!caps.can_attach(WindowState {
+            fullscreen: true,
+            ..state
+        }));
+        assert!(!discoverable_window(
+            Some("AXWindow"),
+            Some("AXDialog"),
+            false
+        ));
+        assert!(!discoverable_window(
+            Some("AXSheet"),
+            Some("AXDialog"),
+            true
+        ));
     }
 }

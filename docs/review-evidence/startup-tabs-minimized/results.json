@@ -1,0 +1,56 @@
+{
+  "started_utc": "2026-09-10T14:02:00.787849+00:00",
+  "environment": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "baseline_commit": "973738051f6447782f661ec171dca78b274ab391",
+    "binary": "/Users/ohaddahan/RustroverProjects/appdock/target/debug/appdock",
+    "binary_sha256": "2e8f3ac9c33f19ee23406ec12e8bfccf4875060bb3e9cacf3e9ff4c59cea1f30"
+  },
+  "cases": [
+    {
+      "id": "prerequisite",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 0.509,
+      "log": "prerequisite.log"
+    },
+    {
+      "id": "Startup",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 3.862,
+      "log": "Startup.log"
+    },
+    {
+      "id": "Minimized",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 3.29,
+      "log": "Minimized.log"
+    },
+    {
+      "id": "A2",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 0.183,
+      "log": "A2.log"
+    },
+    {
+      "id": "design",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 1.839,
+      "log": "design.log"
+    },
+    {
+      "id": "frame",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 11.149,
+      "log": "frame.log"
+    }
+  ]
+}

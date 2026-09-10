@@ -126,7 +126,7 @@ impl InlinePicker {
         let title = label(m, "Add an app window", 19., theme::TEXT);
         let subtitle = label(
             m,
-            "Choose an open window to add to this workspace.",
+            "Choose an open or minimized window to add to this workspace.",
             12.,
             theme::SECONDARY,
         );
@@ -301,7 +301,16 @@ impl InlinePicker {
             row.setBordered(false);
             row.setAlignment(NSTextAlignment::Left);
             row.setAttributedTitle(&attributed(
-                &format!("  {} — {}", window.app, window.title),
+                &format!(
+                    "  {} — {}{}",
+                    window.app,
+                    window.title,
+                    if window.minimized {
+                        " · Minimized"
+                    } else {
+                        ""
+                    }
+                ),
                 theme::TEXT,
                 13.,
             ));

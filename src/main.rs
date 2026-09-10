@@ -14,6 +14,7 @@ mod persistence;
 #[cfg(target_os = "macos")]
 mod picker;
 mod schedule;
+mod startup;
 #[cfg(target_os = "macos")]
 mod ui;
 #[cfg(target_os = "macos")]

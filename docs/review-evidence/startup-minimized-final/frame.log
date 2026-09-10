@@ -1,0 +1,10 @@
+Disposable frame target process: 87479
+Preview window ID: 62705
+Inline picker visible: 62705
+Inline picker visible: 62705
+Inline picker visible: 62705
+Inline picker visible: 62705
+
+thread 'main' (27123694) panicked at src/ui/fixtures.rs:588:9:
+AppDock did not take keyboard focus for renaming
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

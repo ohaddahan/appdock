@@ -9,15 +9,15 @@ use crate::{
 };
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 use objc2::{
-    DefinedClass, MainThreadOnly, define_class, msg_send,
+    AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send,
     rc::Retained,
     runtime::{AnyObject, ProtocolObject},
     sel,
 };
 use objc2_app_kit::*;
 use objc2_foundation::{
-    MainThreadMarker, NSAttributedString, NSDictionary, NSNotification, NSObject, NSObjectProtocol,
-    NSPoint, NSRect, NSSize, NSString, NSTimer,
+    MainThreadMarker, NSAttributedString, NSData, NSDictionary, NSNotification, NSObject,
+    NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSTimer,
 };
 use std::{
     cell::{Cell, OnceCell, RefCell},
@@ -108,28 +108,31 @@ define_class!(
     unsafe impl NSObjectProtocol for TabButton {}
     impl TabButton {
         #[unsafe(method(drawRect:))]
-        fn draw(&self,dirty:NSRect){
-            theme::color(if self.ivars().active.get(){theme::WINDOW}else if self.ivars().action.get() || self.isHighlighted(){theme::HOVER}else{theme::SURFACE}).setFill();
-            NSRectFill(self.bounds());
+        fn draw(&self,_:NSRect){
+            let bounds=self.bounds();
+            theme::color(theme::SURFACE).setFill();NSRectFill(bounds);
+            let active=self.ivars().active.get();
+            let shape=NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect(0.5,2.5,bounds.size.width-1.,bounds.size.height-5.),5.,5.);
+            theme::color(if active {theme::TAB_ACTIVE} else if self.isHighlighted() || self.ivars().action.get() {theme::BORDER} else {theme::TAB_IDLE}).setFill();shape.fill();
+            theme::color(if active {theme::TAB_ACCENT} else {theme::TAB_BORDER}).setStroke();shape.setLineWidth(1.);shape.stroke();
+            let label_width=bounds.size.width-28.; // Keep the close button inside the same tab surface.
+            let badge_width=self.ivars().badge.as_ref().map_or(0.,|badge|if badge=="•"{14.}else{(badge.len() as f64*7.+16.).max(26.)});
+            if let Some(cell)=self.cell(){cell.drawWithFrame_inView(rect(4.,0.,(label_width-badge_width-4.).max(20.),bounds.size.height),self);}
             if let Some(badge)=&self.ivars().badge {
-                let bounds=self.bounds();
                 let dot=badge=="•";
-                let width=if dot{8.}else{(badge.len() as f64*7.+10.).max(20.)};
-                if let Some(cell)=self.cell(){cell.drawWithFrame_inView(rect(0.,0.,bounds.size.width-width-10.,bounds.size.height),self);}
+                let width=badge_width-6.;
                 let height=if dot{8.}else{18.};
-                let badge_rect=rect(bounds.size.width-width-4.,(bounds.size.height-height)/2.,width,height);
-                theme::color(0xC34A55).setFill();
-                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(badge_rect,height/2.,height/2.).fill();
+                let badge_rect=rect(label_width-badge_width,(bounds.size.height-height)/2.,width,height);
+                theme::color(0xC34A55).setFill();NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(badge_rect,height/2.,height/2.).fill();
                 if !dot {
                     let color=NSColor::whiteColor();let font=theme::font(11.);
-                    let attributes=NSDictionary::from_slices(&[unsafe{NSForegroundColorAttributeName},unsafe{NSFontAttributeName}],&[&*color as &AnyObject,&*font as &AnyObject]);
-                    let label=unsafe{NSAttributedString::new_with_attributes(&NSString::from_str(badge),&attributes)};
-                    let size=label.size();
-                    label.drawAtPoint(NSPoint::new(badge_rect.origin.x+(width-size.width)/2.,(bounds.size.height-size.height)/2.));
+                    let attrs=NSDictionary::from_slices(&[unsafe{NSForegroundColorAttributeName},unsafe{NSFontAttributeName}],&[&*color as &AnyObject,&*font as &AnyObject]);
+                    let label=unsafe{NSAttributedString::new_with_attributes(&NSString::from_str(badge),&attrs)};
+                    let size=label.size();label.drawAtPoint(NSPoint::new(badge_rect.origin.x+(width-size.width)/2.,(bounds.size.height-size.height)/2.));
                 }
-            } else {unsafe {let _:()=msg_send![super(self),drawRect:dirty];}}
-            if self.ivars().action.get(){theme::color(theme::SECONDARY).setFill();NSRectFill(rect(0.,0.,3.,self.bounds().size.height));}
-            if self.ivars().active.get(){theme::color(theme::SECONDARY).setFill();NSRectFill(rect(0.,if self.isFlipped(){self.bounds().size.height-2.}else{0.},self.bounds().size.width,2.));}
+            }
+            if active {theme::color(theme::TAB_ACCENT).setFill();NSRectFill(rect(5.,3.,bounds.size.width-10.,3.));}
+            if self.ivars().action.get(){theme::color(theme::TAB_ACCENT).setFill();NSRectFill(rect(2.,7.,3.,bounds.size.height-14.));}
         }
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self,event:&NSEvent){
@@ -223,6 +226,8 @@ struct Ivars {
     rename_field: Cell<Option<std::ptr::NonNull<AnyObject>>>,
     rename_text_view: OnceCell<Retained<RenameFieldEditor>>,
     rename_blur_requested: Cell<bool>,
+    startup_menu: OnceCell<Retained<NSMenu>>,
+    startup_menu_signature: RefCell<String>,
 }
 struct Ui {
     fixture: fixtures::FixtureState,
@@ -346,6 +351,12 @@ define_class!(
         #[unsafe(method(permission:))] fn permission(&self,_:&AnyObject){if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::RequestPermission);}let url=objc2_foundation::NSURL::URLWithString(&NSString::from_str("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")).unwrap();NSWorkspace::sharedWorkspace().openURL(&url);}
         #[unsafe(method(spaceChanged:))] fn space(&self,_:&NSNotification){if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::Pause);}}
         #[unsafe(method(dragTab:))] fn drag(&self,sender:&NSPanGestureRecognizer){if sender.state()==NSGestureRecognizerState::Ended && let Some(view)=sender.view(){let b=self.ivars().ui.borrow();if let Some(u)=b.as_ref(){let id=view.tag() as u64;let point=sender.locationInView(Some(&u.tabs));let index=(point.x/TAB_WIDTH).max(0.) as usize;u.client.send(Command::Reorder(id,index));}}}
+        #[unsafe(method(toggleStartupApp:))] fn toggle_startup(&self,sender:&NSMenuItem) {
+            let Some(bundle)=sender.representedObject().and_then(|o|o.downcast::<NSString>().ok()).map(|s|s.to_string()) else {return};
+            if let Some(u)=self.ivars().ui.borrow().as_ref() {
+                u.client.send(Command::SetStartupApp(StartupApp {bundle,name:sender.title().to_string()},sender.state()!=NSControlStateValueOn));
+            }
+        }
         #[unsafe(method(retryRestoration:))] fn retry_restoration(&self,_:&AnyObject){if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::RetryRestoration);}}
         #[unsafe(method(quitApp:))] fn quit(&self,_:&AnyObject){self.close_request();}
     }
@@ -708,6 +719,20 @@ impl Delegate {
         unsafe {
             retry.setTarget(Some(self));
         }
+        let startup = NSMenu::new(m);
+        startup.setAutoenablesItems(false);
+        let startup_item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(m),
+                &NSString::from_str("Auto-add at Startup"),
+                None,
+                &NSString::from_str(""),
+            )
+        };
+        startup_item.setSubmenu(Some(&startup));
+        self.ivars().startup_menu.set(startup).unwrap();
+        submenu.addItem(&startup_item);
+        submenu.addItem(&NSMenuItem::separatorItem(m));
         submenu.addItem(&retry);
         submenu.addItem(&quit);
         root.setSubmenu(Some(&submenu));
@@ -742,6 +767,92 @@ impl Delegate {
                 "Native tracking-mode regression passed: {samples} WindowServer samples during 150 ms tracking loop"
             );
             self.close_request();
+        }
+    }
+    fn update_startup_menu(&self, snapshot: &worker::Snapshot) {
+        let Some(menu) = self.ivars().startup_menu.get() else {
+            return;
+        };
+        let mut apps = std::collections::BTreeMap::new();
+        for window in &snapshot.windows {
+            if !window.identity.bundle.is_empty() {
+                apps.insert(window.identity.bundle.clone(), window.app.clone());
+            }
+        }
+        for app in &snapshot.workspace.startup_apps {
+            apps.entry(app.bundle.clone())
+                .or_insert_with(|| app.name.clone());
+        }
+        let signature = format!("{apps:?}{:?}", snapshot.workspace.startup_apps);
+        if *self.ivars().startup_menu_signature.borrow() == signature {
+            return;
+        }
+        *self.ivars().startup_menu_signature.borrow_mut() = signature;
+        menu.removeAllItems();
+        let hint = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(self.mtm()),
+                &NSString::from_str("Checked apps are added when AppDock starts."),
+                None,
+                &NSString::from_str(""),
+            )
+        };
+        hint.setEnabled(false);
+        menu.addItem(&hint);
+        let hint = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(self.mtm()),
+                &NSString::from_str("Apps with several windows need your choice."),
+                None,
+                &NSString::from_str(""),
+            )
+        };
+        hint.setEnabled(false);
+        menu.addItem(&hint);
+        menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+        if apps.is_empty() {
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(self.mtm()),
+                    &NSString::from_str("No app windows detected yet"),
+                    None,
+                    &NSString::from_str(""),
+                )
+            };
+            item.setEnabled(false);
+            menu.addItem(&item);
+        }
+        let mut apps: Vec<_> = apps.into_iter().collect();
+        apps.sort_by(|a, b| a.1.cmp(&b.1));
+        for (bundle, name) in apps {
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(self.mtm()),
+                    &NSString::from_str(&name),
+                    Some(sel!(toggleStartupApp:)),
+                    &NSString::from_str(""),
+                )
+            };
+            unsafe {
+                item.setRepresentedObject(Some(&NSString::from_str(&bundle)));
+            }
+            item.setState(
+                if snapshot
+                    .workspace
+                    .startup_apps
+                    .iter()
+                    .any(|app| app.bundle == bundle)
+                {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                },
+            );
+            unsafe {
+                item.setTarget(Some(self));
+            }
+            item.setEnabled(true);
+            menu.addItem(&item);
         }
     }
     fn release_current(&self) {
@@ -887,6 +998,7 @@ impl Delegate {
         u.client
             .set_pointer_down(NSEvent::pressedMouseButtons() != 0);
         let mut s = u.client.snapshot.lock().unwrap().clone();
+        self.update_startup_menu(&s);
         if publish {
             let targets = s
                 .live
@@ -1237,7 +1349,7 @@ impl Delegate {
                 };
                 let button = TabButton::new(
                     self.mtm(),
-                    rect(i as f64 * TAB_WIDTH + 4., 0., TAB_WIDTH - 32., 32.),
+                    rect(i as f64 * TAB_WIDTH + 4., 0., TAB_WIDTH - 8., 32.),
                     tab_indication(t.id, connected.is_some(), s.selected, u.editing),
                     s.badges.get(&t.id).and_then(|label| badge_text(label)),
                 );
@@ -1589,6 +1701,12 @@ pub fn run() {
     let m = MainThreadMarker::new().expect("AppDock must start on the main thread");
     let app = NSApplication::sharedApplication(m);
     let delegate = Delegate::new(m);
+    // Direct launches (including cargo run) have no bundle icon metadata.
+    let icon_data = NSData::with_bytes(include_bytes!("../assets/branding/appdock.png"));
+    let icon = NSImage::initWithData(NSImage::alloc(), &icon_data)
+        .expect("embedded AppDock logo must be a valid image");
+    // SAFETY: A valid image is supplied; this never passes None.
+    unsafe { app.setApplicationIconImage(Some(&icon)) };
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.run();
 }

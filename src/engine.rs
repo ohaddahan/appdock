@@ -157,6 +157,7 @@ impl<B: WindowBackend> Engine<B> {
         let prepared: Result<Rect> = (|| {
             if before.minimized {
                 self.backend.minimize(next.window, false)?;
+                self.backend.validate_restored_window(next.window)?;
             }
             let frame = self.backend.set_frame(next.window, self.area)?;
             if !current() {
@@ -470,6 +471,7 @@ pub(crate) mod tests {
         permission_lost: bool,
         lifecycle_error: Option<BackendError>,
         resize_error: Option<BackendError>,
+        fail_restored_validation: bool,
         watched: std::collections::HashSet<WindowId>,
     }
     impl WindowBackend for Fake {
@@ -542,6 +544,13 @@ pub(crate) mod tests {
                 .minimized = v;
             Ok(())
         }
+        fn validate_restored_window(&self, _id: WindowId) -> Result<()> {
+            if self.fail_restored_validation {
+                Err("Restored target is not a dockable standard window".into())
+            } else {
+                Ok(())
+            }
+        }
         fn focus(&mut self, id: WindowId) -> Result<()> {
             if self.fail_focus {
                 Err("timeout".into())
@@ -578,6 +587,7 @@ pub(crate) mod tests {
                         identifier: None,
                     },
                     eligible: true,
+                    minimized: false,
                 },
             )
             .unwrap();
@@ -845,6 +855,7 @@ pub(crate) mod tests {
             title: "new title".into(),
             identity: e.workspace.tabs[0].identity.clone(),
             eligible: true,
+            minimized: false,
         };
         assert!(e.attach(None, &w).is_err());
         assert_eq!(e.workspace.tabs.len(), 2);
@@ -860,6 +871,7 @@ pub(crate) mod tests {
             title: "new title".into(),
             identity: e.workspace.tabs[0].identity.clone(),
             eligible: true,
+            minimized: false,
         };
         assert!(e.attach(None, &w).is_err());
         e.attach(Some(1), &w).unwrap();
@@ -1069,5 +1081,27 @@ pub(crate) mod tests {
         e.retry_released().unwrap();
         assert!(e.released.is_empty());
         assert_eq!(e.backend.states[&1], original);
+    }
+    #[test]
+    fn minimized_attach_revalidates_before_movement_and_rolls_back_on_failure() {
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        let before = WindowState {
+            minimized: true,
+            ..e.backend.states[&2]
+        };
+        e.backend.states.insert(2, before);
+        e.live.get_mut(&2).unwrap().original = before;
+        e.backend.fail_restored_validation = true;
+        assert!(e.switch(2).is_err());
+        assert_eq!(e.selected, Some(1));
+        assert_eq!(e.backend.states[&2], before);
+        assert!(!e.live[&2].docked);
+        assert_eq!(e.live[&2].original, before);
+        e.backend.fail_restored_validation = false;
+        e.switch(2).unwrap();
+        assert!(!e.backend.states[&2].minimized);
+        e.release(2).unwrap();
+        assert_eq!(e.backend.states[&2], before);
     }
 }

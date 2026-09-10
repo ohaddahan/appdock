@@ -6,6 +6,10 @@ pub const SURFACE: u32 = 0x191A1C;
 pub const WINDOW: u32 = 0x26282C;
 pub const HOVER: u32 = 0x212326;
 pub const BORDER: u32 = 0x33353B;
+pub const TAB_IDLE: u32 = 0x292D34;
+pub const TAB_ACTIVE: u32 = 0x3A4556;
+pub const TAB_BORDER: u32 = 0x4B5260;
+pub const TAB_ACCENT: u32 = 0xAAC9FF;
 pub const TEXT: u32 = 0xD1D3D9;
 pub const SECONDARY: u32 = 0x9FA2A8;
 pub fn color(rgb: u32) -> Retained<NSColor> {

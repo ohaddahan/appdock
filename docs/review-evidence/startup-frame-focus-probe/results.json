@@ -1,0 +1,28 @@
+{
+  "started_utc": "2026-09-10T14:13:10.968267+00:00",
+  "environment": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "baseline_commit": "973738051f6447782f661ec171dca78b274ab391",
+    "binary": "/Users/ohaddahan/RustroverProjects/appdock/target/debug/appdock",
+    "binary_sha256": "956e54a275b7ddea6a702882b6f0ed5ae7cf46cf760666f4418c4c520ca263fb"
+  },
+  "cases": [
+    {
+      "id": "prerequisite",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 0.506,
+      "log": "prerequisite.log"
+    },
+    {
+      "id": "frame",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 11.303,
+      "log": "frame.log"
+    }
+  ]
+}

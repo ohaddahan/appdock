@@ -1,0 +1,2 @@
+review case=Startup accessibility=true
+Startup config passed: restored minimized app on two launches, retained preference through release/quit, skipped rediscovery, and honored disabling
