@@ -17,6 +17,23 @@ open dist/AppDock.app
 
 `./scripts/package.sh --debug` packages the development build. Neither form notarizes, publishes, nor installs outside this directory.
 
+## GitHub releases
+
+The `Release` workflow builds native macOS Apple Silicon (`arm64`) and Intel (`x86_64`) apps with Rust 1.95.0, runs deterministic tests and lint checks on both architectures, and uploads an `AppDock-vVERSION-macos-ARCH.zip` plus its SHA-256 checksum to the GitHub Release. Each ZIP contains `AppDock.app`. No Docker or additional repository secrets are required; publishing uses the repository's `GITHUB_TOKEN`.
+
+Commit the desired version in `Cargo.toml` and the release workflow before tagging that commit:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The tag must match `Cargo.toml`. A pushed `v*` tag creates the release after both builds succeed. Publishing a release for an existing matching tag also triggers builds. For a retry, use **Actions → Release → Run workflow** and enter the existing tag. Manual runs build the tag's source. Repeated runs replace the same named assets; existing release notes are preserved. Tags containing a prerelease suffix create prereleases.
+
+The app bundles use ad-hoc signing, as local packages do; they are not Developer ID signed or notarized, so macOS may block downloaded builds pending user approval. Hosted tests do not validate Accessibility permission or live desktop interactions. macOS 12 is the declared deployment minimum; release CI runs on macOS 15 and does not prove compatibility with every older version.
+
+Linux and Windows are not implemented: the non-macOS executable only reports that macOS is required. Useful releases for those platforms require native UI and window-control backends. A macOS universal binary containing both existing architectures is another possible packaging option.
+
 If prompted, click **Allow window control…**, enable AppDock in System Settings → Privacy & Security → Accessibility, and select **Resume**. If AppDock is absent from the list, use the + button to select `dist/AppDock.app`. Permission belongs to the launch context: a successful terminal diagnostic does not prove a Finder-launched bundle is authorized. Rebuilding an ad-hoc signed app may require granting permission again.
 
 ## Use

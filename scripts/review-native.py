@@ -21,7 +21,7 @@ binary = Path(args.binary).resolve()
 out = Path(args.output).resolve()
 out.mkdir(parents=True, exist_ok=True)
 smokes = {'movement': '--movement-fixture', 'restoration': '--restoration-fixture', 'frame': '--frame-smoke', 'pointer': '--pointer-smoke', 'rename': '--rename-smoke', 'disconnected': '--disconnected-smoke', 'tracking': '--tracking-smoke', 'design': '--design-smoke', 'surface': '--surface-smoke', 'settings': '--ui-smoke'}
-review = {'prerequisite', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'D3', 'D4', 'D5', 'D6', 'Minimized', 'Startup'}
+review = {'prerequisite', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'D3', 'D4', 'D5', 'D6', 'Minimized', 'Startup', 'Animations'}
 cases = args.cases.split(',')
 if any(case not in review and case not in smokes for case in cases):
     parser.error('Only disposable review cases and the allowlisted smoke modes are permitted')

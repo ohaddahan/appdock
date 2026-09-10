@@ -88,6 +88,11 @@ pub struct Workspace {
     pub previous_shortcut: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub startup_apps: Vec<StartupApp>,
+    #[serde(default = "default_keep_apps_open")]
+    pub keep_apps_open_on_close: bool,
+}
+fn default_keep_apps_open() -> bool {
+    true
 }
 impl Default for Workspace {
     fn default() -> Self {
@@ -98,6 +103,7 @@ impl Default for Workspace {
             next_shortcut: "Control+Alt+Super+ArrowRight".into(),
             previous_shortcut: "Control+Alt+Super+ArrowLeft".into(),
             startup_apps: vec![],
+            keep_apps_open_on_close: true,
         }
     }
 }
@@ -186,12 +192,16 @@ pub trait WindowBackend {
         if current.frame.near(state.frame) && current.minimized == state.minimized {
             return Ok(Restoration::Exact);
         }
-        if current.minimized {
-            self.minimize(id, false)?;
+        let mut minimized = current.minimized;
+        if !current.frame.near(state.frame) {
+            if minimized {
+                self.minimize(id, false)?;
+                minimized = false;
+            }
+            self.set_frame(id, state.frame)?;
         }
-        self.set_frame(id, state.frame)?;
-        if state.minimized {
-            self.minimize(id, true)?;
+        if minimized != state.minimized {
+            self.minimize(id, state.minimized)?;
         }
         let actual = self.state(id)?;
         if actual.minimized != state.minimized

@@ -63,6 +63,7 @@ pub(crate) fn run(case: &str) -> Result<()> {
             "D6",
             "Minimized",
             "Startup",
+            "Animations",
         ]
         .contains(&case),
         "Unknown review case",
@@ -140,6 +141,9 @@ fn backend_case(case: &str, pid: i32, dir: &Path) -> Result<()> {
         targets.iter().all(|w| w.pid == pid && w.eligible),
         "Fixture windows are not eligible",
     )?;
+    if case == "Animations" {
+        return animation_case(backend, &targets);
+    }
     if case == "Minimized" {
         for target in &targets {
             backend.minimize(target.id, true)?;
@@ -470,6 +474,107 @@ fn worker_case(case: &str, pid: i32, backend: MacBackend, targets: &[WindowInfo]
     Ok(())
 }
 
+fn animation_case(mut backend: MacBackend, targets: &[WindowInfo]) -> Result<()> {
+    for target in targets {
+        backend.minimize(target.id, true)?;
+    }
+    let mut baseline = Engine::new(
+        backend,
+        Workspace {
+            keep_apps_open_on_close: false,
+            ..Workspace::default()
+        },
+    );
+    let start = Instant::now();
+    for target in targets {
+        let id = baseline.attach(None, target)?;
+        baseline.switch(id)?;
+    }
+    let sequential_startup = start.elapsed();
+    let start = Instant::now();
+    baseline.restore_all()?;
+    let original_close = start.elapsed();
+    require(
+        targets
+            .iter()
+            .all(|w| baseline.backend.state(w.id).is_ok_and(|s| s.minimized)),
+        "Baseline did not restore minimization",
+    )?;
+    let mut quiet = Engine::new(
+        baseline.backend,
+        Workspace {
+            keep_apps_open_on_close: true,
+            ..Workspace::default()
+        },
+    );
+    let start = Instant::now();
+    let ids = targets
+        .iter()
+        .map(|target| quiet.attach_startup(target, || true))
+        .collect::<Result<Vec<_>>>()?;
+    let quiet_startup = start.elapsed();
+    require(
+        quiet.live.len() == targets.len() && quiet.selected == Some(ids[0]),
+        "Quiet startup did not register all tabs",
+    )?;
+    for (index, target) in targets.iter().enumerate() {
+        require(
+            quiet.backend.state(target.id)?.minimized == (index != 0),
+            "Startup restored an inactive window",
+        )?;
+    }
+    // Opening a different tab is an explicit user action; only then restore it.
+    for id in ids.iter().skip(1) {
+        quiet.switch(*id)?;
+    }
+    let originals = quiet
+        .live
+        .values()
+        .map(|a| (a.window, a.original.frame))
+        .collect::<Vec<_>>();
+    let start = Instant::now();
+    quiet.restore_all()?;
+    let keep_open_close = start.elapsed();
+    for (window, frame) in &originals {
+        let state = quiet.backend.state(*window)?;
+        require(
+            !state.minimized && state.frame.near(*frame),
+            "Keep-open close did not preserve visibility and restore geometry",
+        )?;
+    }
+    let mut reopened = Engine::new(
+        quiet.backend,
+        Workspace {
+            keep_apps_open_on_close: true,
+            ..Workspace::default()
+        },
+    );
+    let start = Instant::now();
+    for target in targets {
+        reopened.attach_startup(target, || true)?;
+    }
+    let quiet_reopen = start.elapsed();
+    require(
+        targets
+            .iter()
+            .all(|w| reopened.backend.state(w.id).is_ok_and(|s| !s.minimized)),
+        "Reopen unexpectedly minimized an app",
+    )?;
+    reopened.restore_all()?;
+    println!(
+        "Three-window timing, ms: sequential_startup={} original_close={} quiet_startup={} keep_open_close={} quiet_reopen={}",
+        sequential_startup.as_millis(),
+        original_close.as_millis(),
+        quiet_startup.as_millis(),
+        keep_open_close.as_millis(),
+        quiet_reopen.as_millis()
+    );
+    println!(
+        "All tabs registered; only selected startup window restored; keep-open close preserved all visible windows and their original geometry"
+    );
+    Ok(())
+}
+
 fn startup_case(pid: i32, dir: &Path, mut backend: MacBackend) -> Result<()> {
     send_target(dir, "single")?;
     let windows = backend.discover()?;
@@ -488,6 +593,7 @@ fn startup_case(pid: i32, dir: &Path, mut backend: MacBackend) -> Result<()> {
     };
     let mut saved = Workspace {
         geometry: area,
+        keep_apps_open_on_close: false, // Verify opt-out still restores minimization.
         ..Workspace::default()
     };
     saved.set_startup_app(rule.clone(), true);

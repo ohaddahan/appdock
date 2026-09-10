@@ -42,6 +42,7 @@ pub enum Command {
     SetStartupApp(StartupApp, bool),
     SaveStartupApps,
     ResetStartupApps,
+    SetKeepAppsOpen(bool),
     Switch(TabId, u64),
     Resize(Rect, Rect),
     Rename(TabId, String),
@@ -203,6 +204,7 @@ impl Client {
                 | Command::SetStartupApp(..)
                 | Command::SaveStartupApps
                 | Command::ResetStartupApps
+                | Command::SetKeepAppsOpen(_)
         ) {
             self.generation.fetch_add(1, Ordering::SeqCst);
             self.requested_tab.lock().unwrap().take();
@@ -305,6 +307,7 @@ pub fn start(workspace: Workspace) -> Client {
                         | Command::SetStartupApp(..)
                         | Command::SaveStartupApps
                         | Command::ResetStartupApps
+                        | Command::SetKeepAppsOpen(_)
                         | Command::Switch(..)
                         | Command::Release(_)
                         | Command::Pause
@@ -370,6 +373,11 @@ pub fn start(workspace: Workspace) -> Client {
                             discovery_complete = true;
                         })
                 }
+                Some(Command::SetKeepAppsOpen(value)) => {
+                    engine.workspace.keep_apps_open_on_close = value;
+                    dirty = true;
+                    Ok(())
+                }
                 Some(Command::SaveStartupApps) => {
                     engine.save_startup_apps(&windows);
                     dirty = true;
@@ -402,9 +410,7 @@ pub fn start(workspace: Workspace) -> Client {
                                     .any(|a| engine.backend.same_window(a.window, id)) =>
                             {
                                 dirty = true;
-                                engine
-                                    .attach(None, window)
-                                    .and_then(|tab| engine.switch_current(tab, current))
+                                engine.attach_startup(window, current).map(|_| ())
                             }
                             _ => Ok(()),
                         }

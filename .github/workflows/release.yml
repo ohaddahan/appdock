@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag (must match Cargo.toml, e.g. v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: '0'
+  RUSTUP_TOOLCHAIN: '1.95.0'
+  MACOSX_DEPLOYMENT_TARGET: '12.0'
+  RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+
+jobs:
+  build:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Validate version tag
+        run: |
+          python3 - <<'PY'
+          import os, re, tomllib
+          with open('Cargo.toml', 'rb') as f:
+              version = tomllib.load(f)['package']['version']
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', tag) or tag != f'v{version}':
+              raise SystemExit(f'Tag {tag!r} must equal v{version} and use a release version')
+          PY
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - name: Check and test
+        run: |
+          cargo fmt --all --check
+          cargo test --all-features --locked
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Package release app
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          scripts/package.sh
+          lipo -verify_arch "$EXPECTED_ARCH" dist/AppDock.app/Contents/MacOS/AppDock
+          mkdir -p release-assets
+          archive="AppDock-${RELEASE_TAG}-macos-${EXPECTED_ARCH}.zip"
+          ditto -c -k --sequesterRsrc --keepParent dist/AppDock.app "release-assets/$archive"
+          cd release-assets
+          shasum -a 256 "$archive" > "$archive.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: appdock-macos-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Upload GitHub release assets
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: appdock-macos-*
+          merge-multiple: true
+          path: release-assets
+      - name: Verify downloaded archives
+        working-directory: release-assets
+        run: sha256sum --check ./*.sha256
+      - name: Create release if needed and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            args=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes "${args[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber

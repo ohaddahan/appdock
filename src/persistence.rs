@@ -163,4 +163,25 @@ mod tests {
         assert!(load_for_launch(&p).unwrap().startup_apps.is_empty());
         fs::remove_file(p).unwrap();
     }
+    #[test]
+    fn close_visibility_preference_defaults_to_keep_open_and_honors_explicit_opt_out() {
+        let path =
+            std::env::temp_dir().join(format!("appdock-close-policy-{}.json", std::process::id()));
+        let mut workspace = Workspace::default();
+        assert!(workspace.keep_apps_open_on_close);
+        let mut legacy = serde_json::to_value(&workspace).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("keep_apps_open_on_close");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(load(&path).unwrap().keep_apps_open_on_close);
+        workspace.keep_apps_open_on_close = false;
+        save(&path, &workspace).unwrap();
+        assert!(!load_for_launch(&path).unwrap().keep_apps_open_on_close);
+        workspace.keep_apps_open_on_close = true;
+        save(&path, &workspace).unwrap();
+        assert!(load_for_launch(&path).unwrap().keep_apps_open_on_close);
+        fs::remove_file(path).unwrap();
+    }
 }

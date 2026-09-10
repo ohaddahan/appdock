@@ -69,6 +69,9 @@ impl Delegate {
             menu.indexOfItemWithTitle(&NSString::from_str("Save Current Apps for Startup")) >= 0
         );
         assert!(menu.indexOfItemWithTitle(&NSString::from_str("Reset Saved App Choices")) >= 0);
+        let keep_open = menu.indexOfItemWithTitle(&NSString::from_str("Keep Apps Open on Close"));
+        assert!(keep_open >= 0, "Keep-open preference missing from Settings");
+        menu.performActionForItemAtIndex(keep_open);
         self.ivars()
             .ui
             .borrow_mut()
@@ -279,6 +282,16 @@ impl Delegate {
                 return None;
             }
             if count == 19 {
+                assert!(
+                    !s.workspace.keep_apps_open_on_close,
+                    "Settings did not honor the keep-open opt-out"
+                );
+                assert!(
+                    !persistence::load(&persistence::path())
+                        .unwrap()
+                        .keep_apps_open_on_close,
+                    "Keep-open opt-out was not persisted"
+                );
                 assert_eq!(
                     u.fixture.settings_popup_stage, 3,
                     "Settings popup did not complete"

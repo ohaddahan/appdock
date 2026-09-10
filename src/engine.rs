@@ -7,6 +7,8 @@ pub struct Attachment {
     pub original: WindowState,
     pub expected: WindowState,
     pub docked: bool,
+    /// Startup registration has not attempted to control this window yet.
+    pub deferred_startup: bool,
 }
 pub struct Engine<B: WindowBackend> {
     pub backend: B,
@@ -108,6 +110,7 @@ impl<B: WindowBackend> Engine<B> {
                 original,
                 expected: original,
                 docked: false,
+                deferred_startup: false,
             },
         );
         self.backend.watch(window.id, true);
@@ -140,6 +143,23 @@ impl<B: WindowBackend> Engine<B> {
     }
     pub fn reset_startup_apps(&mut self) {
         self.workspace.startup_apps.clear();
+    }
+    /// Register startup tabs without restoring and focusing every window in turn.
+    /// Untouched windows retain their original state until explicitly selected.
+    pub fn attach_startup(
+        &mut self,
+        window: &WindowInfo,
+        current: impl Fn() -> bool,
+    ) -> Result<TabId> {
+        if !current() {
+            return Err(BackendError::cancelled());
+        }
+        let id = self.attach(None, window)?;
+        self.live.get_mut(&id).unwrap().deferred_startup = true;
+        if self.selected.is_none() {
+            self.switch_current(id, current)?;
+        }
+        Ok(id)
     }
     pub fn switch(&mut self, id: TabId) -> Result<()> {
         self.switch_current(id, || true)
@@ -182,6 +202,8 @@ impl<B: WindowBackend> Engine<B> {
         }
         // The UI orders an opaque backdrop below this exact focused window.
         // Inactive tabs remain open; only an already minimized target needs restoring.
+        // From this point even a failed preparation may need restoration.
+        self.live.get_mut(&id).unwrap().deferred_startup = false;
         let prepared: Result<Rect> = (|| {
             if before.minimized {
                 self.backend.minimize(next.window, false)?;
@@ -248,8 +270,12 @@ impl<B: WindowBackend> Engine<B> {
     /// Detaching is unconditional. Failed restoration must never re-dock a released window.
     pub fn detach(&mut self, id: TabId) {
         if let Some(a) = self.live.remove(&id) {
-            // Lifecycle observation remains read-only for detached windows.
-            self.released.insert(id, a);
+            if a.deferred_startup {
+                self.backend.watch(a.window, false);
+            } else {
+                // Lifecycle observation remains read-only for detached windows.
+                self.released.insert(id, a);
+            }
         }
         self.workspace.tabs.retain(|t| t.id != id);
         if self.selected == Some(id) {
@@ -314,11 +340,20 @@ impl<B: WindowBackend> Engine<B> {
         let mut restored = vec![];
         let mut outcomes = vec![];
         for (&id, a) in &self.live {
-            match self
-                .backend
-                .check_window(a.window)
-                .and_then(|()| self.backend.restore_for_release(a.window, a.original))
-            {
+            if a.deferred_startup {
+                self.backend.watch(a.window, false);
+                restored.push(id);
+                continue;
+            }
+            match self.backend.check_window(a.window).and_then(|()| {
+                let mut target = a.original;
+                if self.workspace.keep_apps_open_on_close && a.docked {
+                    // Keep current visibility (including a user-minimized
+                    // window), but still return to the original geometry.
+                    target.minimized = self.backend.state(a.window)?.minimized;
+                }
+                self.backend.restore_for_release(a.window, target)
+            }) {
                 Err(e) if e.kind == ErrorKind::Closed => {
                     self.backend.watch(a.window, false);
                     restored.push(id);
@@ -592,7 +627,14 @@ pub(crate) mod tests {
         }
     }
     pub(crate) fn fixture() -> Engine<Fake> {
-        let mut e = Engine::new(Fake::default(), Workspace::default());
+        // Legacy restoration tests exercise the explicit original-state policy.
+        let mut e = Engine::new(
+            Fake::default(),
+            Workspace {
+                keep_apps_open_on_close: false,
+                ..Workspace::default()
+            },
+        );
         for id in 1..=2 {
             e.backend.states.insert(
                 id,
@@ -1135,6 +1177,7 @@ pub(crate) mod tests {
     #[test]
     fn save_and_reset_startup_choices_do_not_change_live_windows_or_other_preferences() {
         let mut e = fixture();
+        e.workspace.keep_apps_open_on_close = true;
         e.switch(1).unwrap();
         e.workspace.startup_apps.push(StartupApp {
             bundle: "old.app".into(),
@@ -1157,6 +1200,7 @@ pub(crate) mod tests {
         );
         e.reset_startup_apps();
         assert!(e.workspace.startup_apps.is_empty());
+        assert!(e.workspace.keep_apps_open_on_close);
         assert_eq!(e.backend.states, states);
         assert_eq!(e.live.len(), 2);
         assert_eq!(e.workspace.tabs.len(), 2);
@@ -1169,5 +1213,122 @@ pub(crate) mod tests {
             ),
             shortcuts
         );
+    }
+    #[test]
+    fn quiet_startup_registers_all_tabs_but_only_restores_first_selected_window() {
+        let mut e = fixture();
+        e.live.clear();
+        e.workspace.tabs.clear();
+        for state in e.backend.states.values_mut() {
+            state.minimized = true;
+        }
+        for id in 1..=2 {
+            let window = WindowInfo {
+                id,
+                pid: 10,
+                app: format!("app{id}"),
+                title: "Fixture".into(),
+                identity: Identity {
+                    bundle: format!("app{id}"),
+                    identifier: None,
+                },
+                eligible: true,
+                minimized: true,
+            };
+            e.attach_startup(&window, || true).unwrap();
+        }
+        assert_eq!(e.live.len(), 2);
+        assert_eq!(e.selected, Some(1));
+        assert_eq!(e.backend.minimize_calls, vec![(1, false)]);
+        assert!(e.live[&1].docked);
+        assert!(!e.live[&2].docked);
+        assert!(e.backend.states[&2].minimized);
+        e.switch(2).unwrap();
+        assert_eq!(e.backend.minimize_calls, vec![(1, false), (2, false)]);
+        assert!(e.live.values().all(|a| a.original.minimized));
+    }
+    #[test]
+    fn keep_open_on_close_preserves_visibility_but_restores_geometry() {
+        let mut e = fixture();
+        for a in e.live.values_mut() {
+            a.original.minimized = true;
+        }
+        e.area.x += 300.;
+        e.switch(1).unwrap();
+        e.switch(2).unwrap();
+        e.workspace.keep_apps_open_on_close = true;
+        let calls = e.backend.minimize_calls.len();
+        e.restore_all().unwrap();
+        assert_eq!(e.backend.minimize_calls.len(), calls);
+        assert!(
+            e.backend
+                .states
+                .values()
+                .all(|s| !s.minimized && s.frame == Rect::default())
+        );
+    }
+    #[test]
+    fn keep_open_policy_does_not_change_explicit_release_or_original_retry_snapshots() {
+        let mut e = fixture();
+        e.live.get_mut(&1).unwrap().original.minimized = true;
+        e.area.x += 300.;
+        e.switch(1).unwrap();
+        e.workspace.keep_apps_open_on_close = true;
+        e.backend.fail_resize = true;
+        assert!(e.restore_all().is_err());
+        assert!(e.live[&1].original.minimized);
+        e.backend.fail_resize = false;
+        e.release(1).unwrap();
+        assert!(e.backend.states[&1].minimized);
+    }
+    #[test]
+    fn visibility_only_restoration_does_not_rewrite_geometry() {
+        let mut e = fixture();
+        e.live.get_mut(&1).unwrap().original.minimized = true;
+        e.release(1).unwrap();
+        assert_eq!(e.backend.resizes, 0);
+        assert_eq!(e.backend.minimize_calls, vec![(1, true)]);
+    }
+    #[test]
+    fn never_selected_startup_tabs_are_left_untouched_on_release_and_close() {
+        for release in [false, true] {
+            let mut e = fixture();
+            e.live.clear();
+            e.workspace.tabs.clear();
+            for state in e.backend.states.values_mut() {
+                state.minimized = true;
+            }
+            for id in 1..=2 {
+                let window = WindowInfo {
+                    id,
+                    pid: 10,
+                    app: format!("app{id}"),
+                    title: "Fixture".into(),
+                    identity: Identity {
+                        bundle: format!("app{id}"),
+                        identifier: None,
+                    },
+                    eligible: true,
+                    minimized: true,
+                };
+                e.attach_startup(&window, || true).unwrap();
+            }
+            let external = WindowState {
+                frame: Rect {
+                    x: 999.,
+                    ..Rect::default()
+                },
+                minimized: false,
+                fullscreen: false,
+                modal: false,
+            };
+            e.backend.states.insert(2, external);
+            if release {
+                e.release(2).unwrap();
+            }
+            e.restore_all().unwrap();
+            assert_eq!(e.backend.states[&2], external);
+            assert!(!e.backend.minimize_calls.iter().any(|(id, _)| *id == 2));
+        }
     }
 }

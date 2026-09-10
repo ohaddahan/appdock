@@ -362,6 +362,7 @@ define_class!(
         #[unsafe(method(showSettings:))] fn settings(&self,_:&AnyObject) {self.show_settings();}
         #[unsafe(method(saveStartupApps:))] fn save_apps(&self,_:&AnyObject) {if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::SaveStartupApps);}}
         #[unsafe(method(resetStartupApps:))] fn reset_apps(&self,_:&AnyObject) {if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::ResetStartupApps);}}
+        #[unsafe(method(toggleKeepAppsOpen:))] fn toggle_keep_open(&self,sender:&NSMenuItem) {if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::SetKeepAppsOpen(sender.state()!=NSControlStateValueOn));}}
         #[unsafe(method(toggleStartupApp:))] fn toggle_startup(&self,sender:&NSMenuItem) {
             let Some(bundle)=sender.representedObject().and_then(|o|o.downcast::<NSString>().ok()).map(|s|s.to_string()) else {return};
             if let Some(u)=self.ivars().ui.borrow().as_ref() {
@@ -865,7 +866,10 @@ impl Delegate {
         let can_save = snapshot.workspace.tabs.iter().any(|tab| {
             !tab.identity.bundle.is_empty() && snapshot.live.iter().any(|(id, _)| *id == tab.id)
         });
-        let signature = format!("{apps:?}{:?}{can_save}", snapshot.workspace.startup_apps);
+        let signature = format!(
+            "{apps:?}{:?}{can_save}{}",
+            snapshot.workspace.startup_apps, snapshot.workspace.keep_apps_open_on_close
+        );
         if *self.ivars().startup_menu_signature.borrow() == signature {
             return;
         }
@@ -897,6 +901,26 @@ impl Delegate {
             item.setEnabled(enabled);
             menu.addItem(&item);
         }
+        menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+        let keep_open = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(self.mtm()),
+                &NSString::from_str("Keep Apps Open on Close"),
+                Some(sel!(toggleKeepAppsOpen:)),
+                &NSString::from_str(""),
+            )
+        };
+        keep_open.setState(if snapshot.workspace.keep_apps_open_on_close {
+            NSControlStateValueOn
+        } else {
+            NSControlStateValueOff
+        });
+        keep_open.setToolTip(Some(&NSString::from_str("Restore original positions without sending open windows back to the Dock. Explicit Release still restores the original minimized state.")));
+        unsafe {
+            keep_open.setTarget(Some(self));
+        }
+        keep_open.setEnabled(true);
+        menu.addItem(&keep_open);
         menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
         let hint = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(

@@ -100,23 +100,6 @@ Verification:
 - Formatting, Clippy with warnings denied, locked debug/release builds, and ad-hoc package verification passed.
 - All native checks used isolated AppDock fixtures; the user's running instance and application windows were not modified.
 
-## Compact Terminator-style UI and inline rename — 2026-09-10
-
-The main toolbar was replaced with a compact tab strip: + adds windows and × releases them. Rename and Close AppDock buttons are gone. Resume appears only when docking is paused; Allow window control appears only when permission is unavailable; Replace window appears for the selected disconnected tab. Standard window close and Cmd–Q still restore managed windows before quitting.
-
-Styling uses the current Terminator default colors from `terminator/crates/core/src/appearance.rs`, 13-point Inter typography, 220×32-point flat tabs, and the current selected-tab underline color. Inter Regular and its original license were copied into AppDock and registered process-locally. Terminator files and user configuration were not changed.
-
-Double-clicking a tab opens an inline text field. Enter/blur commits, Escape cancels. Native testing caught a redundant focus/selection call that prematurely ended editing; it was removed before delivery. A native double-click event now opens the editor and the isolated fixture verifies commit and cancel results.
-
-Checks:
-
-- 29 tests passed; formatting, Clippy with warnings denied, locked builds and release packaging passed.
-- Native inline rename fixture passed commit and cancel.
-- Native transparent-surface fixture passed with the new 64-point header.
-- Native tracking-mode fixture passed with 14 WindowServer samples in 150 ms.
-- [Native styled preview](screenshots/terminator-style-workspace.png) was captured by exact window ID and inspected. It contains dummy disconnected tabs, so Replace window is visible. No user app windows were attached or moved.
-
-The screenshot helper's application-name activation stalled; it was replaced with exact-window capture. The preview and test processes exited normally. Physical keyboard/gesture use against real managed applications remains an interactive check; fixture double-click delivery is synthetic.
 
 ## Opaque backdrop switching — 2026-09-10
 
@@ -142,10 +125,6 @@ The reported Retry close message originated from the exact-frame comparison in r
 - Formatting, Clippy with warnings denied, locked builds, release packaging and signature verification passed.
 
 These tests did not attach or change existing user windows or edit the real saved workspace. The fixes take effect after restarting the rebuilt app.
-
-## Title-bar Add control — 2026-09-10
-
-Moved + from the tab row into a native title-bar accessory and reclaimed the full tab-row width. The existing Add action is retained. A disposable preview was inspected through Orca computer-use and [captured by window ID](screenshots/titlebar-add-window.png); the button is visible at the right of the title bar. The preview contained dummy disconnected tabs. Orca became unavailable during follow-up action verification, so this run does not claim a verified picker-open interaction. Formatting, Clippy, 39 unit tests, locked builds and local release packaging passed.
 
 ## Fresh launches and Add App beside the title — 2026-09-10
 

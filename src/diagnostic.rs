@@ -93,7 +93,13 @@ pub fn run(smoke: bool) -> Result<()> {
         if !smoke {
             return Ok(());
         }
-        let mut e = Engine::new(b, Workspace::default());
+        let mut e = Engine::new(
+            b,
+            Workspace {
+                keep_apps_open_on_close: false,
+                ..Workspace::default()
+            },
+        );
         let mut ids = vec![];
         for bundle in ["com.hnc.Discord", "org.telegram.desktop"] {
             let matches: Vec<_> = windows
@@ -185,7 +191,7 @@ pub fn movement_fixture() -> Result<()> {
             std::thread::sleep(Duration::from_millis(100));
         }
         let window=found.ok_or("Fixture did not expose an eligible window")?;
-        let mut engine=Engine::new(backend,Workspace::default());
+        let mut engine=Engine::new(backend,Workspace {keep_apps_open_on_close:false,..Workspace::default()});
         let id=engine.attach(None,&window)?;
         let exercise=(|| {
             engine.switch(id)?;
@@ -328,7 +334,13 @@ pub fn overlay_fixture(constrained_restore: bool) -> Result<()> {
             )
             .into());
         }
-        let mut engine = Engine::new(backend, Workspace::default());
+        let mut engine = Engine::new(
+            backend,
+            Workspace {
+                keep_apps_open_on_close: false,
+                ..Workspace::default()
+            },
+        );
         let mut ids = Vec::new();
         for target in &targets {
             ids.push(engine.attach(None, target)?);
