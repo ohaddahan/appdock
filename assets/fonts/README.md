@@ -1,0 +1,1 @@
+Inter Regular is copied from Terminator's existing bundled font to match its 13-point UI typography. The original license is retained as `Inter-LICENSE.txt`. AppDock embeds the font and registers it only for the current process; it does not install or modify system/user fonts.
