@@ -1,0 +1,8 @@
+Use case: logo-brand
+Asset type: AppDock application logo symbol, square canvas.
+Primary request: Design one exceptional minimal geometric monogram for AppDock, a native macOS app that brings existing application windows into one tabbed workspace. Fuse an abstract A and D into one bold compact symbol: a continuous architectural window-frame silhouette, with a precise negative-space docking slot and subtle tab-like notch. The idea should read as a unified dock and window before literal lettering. Make an original, sophisticated, highly memorable software identity.
+Style/medium: Pure flat vector-like graphic rendered as a raster, immaculate smooth edges, disciplined geometry, subtly rounded outside corners, assertive thick forms, optically balanced negative space.
+Composition/framing: Exactly one standalone centered symbol, occupying about 70 percent of a square image; generous transparent margins on all sides; front-facing 2D.
+Color palette: Solid very dark charcoal #25272C only.
+Scene/backdrop: Genuinely transparent background with preserved alpha channel; transparent negative spaces through the symbol.
+Constraints: Immediate legibility at 24px. No wordmark, no captions, no mockup, no presentation board, no grid, no background tile, no gradients, no texture, no shadows, no 3D, no extra decorative elements. Return only the standalone logo on actual transparency.

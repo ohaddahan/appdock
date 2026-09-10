@@ -1,0 +1,12 @@
+Use case: logo-brand
+Asset type: standalone AppDock app logo symbol, square canvas.
+Primary request: Design a sophisticated minimalist logo for AppDock, a native macOS utility that gathers existing application windows into one tabbed workspace. The concept is three compact application-window tiles nesting into one unified dock or cradle. Distill this into one instantly recognizable, balanced geometric mark.
+Subject and form: three upright rounded rectangle tiles, subtly stepped and overlapping, embraced at their lower edge by a simple broad U-shaped cradle. The cradle and tiles read as one tight engineered silhouette; generous clear negative-space separation, consistent soft corner radii, strong symmetry with a slight ascending rhythm. No tiny window controls or internal details.
+Style: immaculate flat vector-like logo artwork, solid fills, crisp edges, professional software identity, legible at 24 pixels.
+Color: restrained cool palette of vivid cornflower blue, medium blue and pale ice blue; no gradients, shadows or texture.
+Composition: single centered symbol occupying roughly 70% of a square canvas, equal generous margins.
+Background: genuinely transparent alpha background; no white or colored background, no checkerboard pattern.
+Constraints: no letters, no words, no watermark, no presentation board, no mockup, no 3D, no glow. One logo only.
+
+Edit iteration:
+Refine the supplied AppDock logo, preserving exactly its composition and recognizable concept: three ascending blue rounded window tiles nested in a broad blue U-shaped cradle. Change only the rendering quality and background. Render the mark as mathematically clean flat vector-like shapes with smooth pristine anti-aliased boundaries, consistent corners and no speckles, torn edges, halos or fringing. Use crisp solid blue and ice-blue fills without gradients or texture. The gaps around the cradle must be clean and even. Set the entire background to solid pure white, including all negative-space gaps; do not retain transparency or any edge artifacts. Keep the same centered square layout and proportions. No text, watermark, additional shapes or mockup.

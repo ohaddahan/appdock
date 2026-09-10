@@ -1,0 +1,3 @@
+review case=D6 accessibility=true
+D6 final_owner_visible=true
+D6 backdrop survives final owner destruction

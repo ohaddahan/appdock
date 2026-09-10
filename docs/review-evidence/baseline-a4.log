@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/main.rs (target/debug/deps/appdock-726fa8d9c57e9a5f)
+
+running 2 tests
+test engine::tests::a4_resume_preflights_inactive_dialog_before_any_changes ... FAILED
+test engine::tests::a4_resume_moves_all_previously_docked_windows ... FAILED
+
+failures:
+
+---- engine::tests::a4_resume_preflights_inactive_dialog_before_any_changes stdout ----
+
+thread 'engine::tests::a4_resume_preflights_inactive_dialog_before_any_changes' (26913250) panicked at src/engine.rs:816:9:
+assertion failed: e.resume().is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- engine::tests::a4_resume_moves_all_previously_docked_windows stdout ----
+
+thread 'engine::tests::a4_resume_moves_all_previously_docked_windows' (26913249) panicked at src/engine.rs:802:13:
+assertion `left == right` failed
+  left: Rect { x: 120.0, y: 120.0, width: 1000.0, height: 740.0 }
+ right: Rect { x: 800.0, y: 120.0, width: 1100.0, height: 740.0 }
+
+
+failures:
+    engine::tests::a4_resume_moves_all_previously_docked_windows
+    engine::tests::a4_resume_preflights_inactive_dialog_before_any_changes
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 38 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin appdock`

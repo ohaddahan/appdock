@@ -36,7 +36,10 @@ impl<B: WindowBackend> Engine<B> {
     }
     pub fn attach(&mut self, tab: Option<TabId>, window: &WindowInfo) -> Result<TabId> {
         if !self.backend.trusted() {
-            return Err("Enable Accessibility in System Settings, then Resume.".into());
+            return Err(BackendError::new(
+                ErrorKind::Permission,
+                "Enable Accessibility in System Settings, then Resume.",
+            ));
         }
         if !window.eligible {
             return Err("Window does not support moving, resizing, minimizing and raising.".into());
@@ -88,8 +91,16 @@ impl<B: WindowBackend> Engine<B> {
             });
         }
         // A new explicit attachment supersedes any old detached recovery for this window.
-        self.released
-            .retain(|_, a| !self.backend.same_window(a.window, window.id));
+        let superseded: Vec<_> = self
+            .released
+            .iter()
+            .filter(|(_, a)| self.backend.same_window(a.window, window.id))
+            .map(|(id, a)| (*id, a.window))
+            .collect();
+        for (id, old_window) in superseded {
+            self.released.remove(&id);
+            self.backend.watch(old_window, false);
+        }
         self.live.insert(
             id,
             Attachment {
@@ -111,10 +122,13 @@ impl<B: WindowBackend> Engine<B> {
         }
         if !self.backend.trusted() {
             self.paused = Some("Accessibility permission is unavailable".into());
-            return Err("Enable Accessibility, then Resume.".into());
+            return Err(BackendError::new(
+                ErrorKind::Permission,
+                "Enable Accessibility, then Resume.",
+            ));
         }
         if let Some(reason) = &self.paused {
-            return Err(format!("Docking paused: {reason}. Select Resume."));
+            return Err(format!("Docking paused: {reason}. Select Resume.").into());
         }
         let next = self
             .live
@@ -146,7 +160,7 @@ impl<B: WindowBackend> Engine<B> {
             }
             let frame = self.backend.set_frame(next.window, self.area)?;
             if !current() {
-                return Err("Superseded by a newer selection".into());
+                return Err(BackendError::cancelled());
             }
             self.backend.focus(next.window)?;
             Ok(frame)
@@ -158,7 +172,11 @@ impl<B: WindowBackend> Engine<B> {
                 if let Some(old) = self.selected.and_then(|id| self.live.get(&id)) {
                     let _ = self.backend.focus(old.window);
                 }
-                return Err(format!("Switch failed: {e}; rollback: {rollback:?}"));
+                let mut error = e.context("Switch failed");
+                if let Err(rollback) = rollback {
+                    error.causes.push(rollback.context("Rollback"));
+                }
+                return Err(error);
             }
         };
         if !current() {
@@ -201,7 +219,7 @@ impl<B: WindowBackend> Engine<B> {
     /// Detaching is unconditional. Failed restoration must never re-dock a released window.
     pub fn detach(&mut self, id: TabId) {
         if let Some(a) = self.live.remove(&id) {
-            self.backend.watch(a.window, false);
+            // Lifecycle observation remains read-only for detached windows.
             self.released.insert(id, a);
         }
         self.workspace.tabs.retain(|t| t.id != id);
@@ -210,10 +228,19 @@ impl<B: WindowBackend> Engine<B> {
         }
     }
     pub fn restore_released(&mut self, id: TabId) -> Result<()> {
-        if let Some(a) = self.released.get(&id) {
-            let result = self.backend.restore_for_release(a.window, a.original);
+        if let Some(a) = self.released.get(&id).cloned() {
+            match self.backend.check_window(a.window) {
+                Err(e) if e.kind == ErrorKind::Closed => {
+                    self.backend.watch(a.window, false);
+                    self.released.remove(&id);
+                    return Ok(());
+                }
+                Err(e) => return Err(e.context("Released window still awaits restoration")),
+                Ok(()) => {}
+            }
+            let restored = self.backend.restore_for_release(a.window, a.original)
+                .map_err(|e| e.context("Window released; original state could not be restored. Use AppDock → Retry restoration"))?;
             self.backend.watch(a.window, false);
-            let restored = result.map_err(|e|format!("Window released; original state could not be restored: {e}. Use AppDock → Retry restoration."))?;
             self.record_restoration(id, restored);
             self.released.remove(&id);
         }
@@ -232,7 +259,7 @@ impl<B: WindowBackend> Engine<B> {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(errors.join("\n"))
+            Err(BackendError::multiple(errors))
         }
     }
     pub fn follow_workspace(&mut self, area: Rect) -> Result<()> {
@@ -258,8 +285,16 @@ impl<B: WindowBackend> Engine<B> {
         let mut restored = vec![];
         let mut outcomes = vec![];
         for (&id, a) in &self.live {
-            match self.backend.restore_for_release(a.window, a.original) {
-                Err(e) => errors.push(format!("Tab {id}: {e}")),
+            match self
+                .backend
+                .check_window(a.window)
+                .and_then(|()| self.backend.restore_for_release(a.window, a.original))
+            {
+                Err(e) if e.kind == ErrorKind::Closed => {
+                    self.backend.watch(a.window, false);
+                    restored.push(id);
+                }
+                Err(e) => errors.push(e.context(format!("Tab {id}"))),
                 Ok(outcome) => {
                     self.backend.watch(a.window, false);
                     restored.push(id);
@@ -282,7 +317,7 @@ impl<B: WindowBackend> Engine<B> {
             self.selected = None;
             Ok(())
         } else {
-            Err(errors.join("\n"))
+            Err(BackendError::multiple(errors))
         }
     }
     fn record_restoration(&mut self, id: TabId, outcome: Restoration) {
@@ -299,6 +334,8 @@ impl<B: WindowBackend> Engine<B> {
                     self.paused = Some("Accessibility permission was revoked".into())
                 }
                 BackendEvent::Closed(w) => {
+                    self.released.retain(|_, a| a.window != w);
+                    self.backend.watch(w, false);
                     let ids: Vec<_> = self
                         .live
                         .iter()
@@ -315,7 +352,9 @@ impl<B: WindowBackend> Engine<B> {
                     }
                 }
                 BackendEvent::Changed(w) => {
-                    if let Some((&id, a)) = self.live.iter().find(|(_, a)| a.window == w) {
+                    if let Some((&id, a)) =
+                        self.live.iter().find(|(_, a)| a.window == w && a.docked)
+                    {
                         let expected = a.expected;
                         match self.backend.state(w) {
                             Ok(state)
@@ -339,10 +378,10 @@ impl<B: WindowBackend> Engine<B> {
                                     Ok(frame) => {
                                         self.live.get_mut(&id).unwrap().expected.frame = frame
                                     }
-                                    Err(e) => self.paused = Some(e),
+                                    Err(e) => self.paused = Some(e.to_string()),
                                 }
                             }
-                            Err(e) if !self.pointer_down => self.paused = Some(e),
+                            Err(e) if !self.pointer_down => self.paused = Some(e.to_string()),
                             _ => {}
                         }
                     }
@@ -351,26 +390,72 @@ impl<B: WindowBackend> Engine<B> {
         }
     }
     pub fn resume(&mut self) -> Result<()> {
-        if !self.backend.trusted() {
-            return Err("Accessibility permission is still unavailable.".into());
+        // Remain paused even after a partial failure; successful changes update
+        // expected state immediately, while original restoration snapshots survive.
+        self.paused = Some("Resuming docking".into());
+        let result = (|| {
+            if !self.backend.trusted() {
+                return Err(BackendError::new(
+                    ErrorKind::Permission,
+                    "Accessibility permission is still unavailable",
+                ));
+            }
+            let mut ids: Vec<_> = self
+                .live
+                .iter()
+                .filter(|(_, a)| a.docked)
+                .map(|(id, _)| *id)
+                .collect();
+            ids.sort_unstable();
+            let mut states = HashMap::new();
+            for id in &ids {
+                let window = self.live[id].window;
+                self.backend.check_window(window)?;
+                let state = self.backend.state(window)?;
+                if state.fullscreen || state.modal {
+                    return Err("Leave fullscreen and close dialogs before resuming".into());
+                }
+                states.insert(*id, state);
+            }
+            for id in ids {
+                let a = self.live.get_mut(&id).unwrap();
+                if states[&id].minimized {
+                    self.backend.minimize(a.window, false)?;
+                    a.expected.minimized = false;
+                }
+                a.expected.frame = self.backend.set_frame(a.window, self.area)?;
+                a.expected.minimized = false;
+                a.expected.fullscreen = false;
+                a.expected.modal = false;
+            }
+            if let Some(a) = self
+                .selected
+                .and_then(|id| self.live.get(&id))
+                .filter(|a| a.docked)
+            {
+                self.backend.focus(a.window)?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.paused = None;
+                Ok(())
+            }
+            Err(e) => {
+                self.paused = Some(e.to_string());
+                Err(e)
+            }
         }
-        for a in self.live.values_mut() {
-            a.expected = self.backend.state(a.window)?;
-        }
-        self.paused = None;
-        if let Some(id) = self.selected {
-            self.switch(id)?;
-        }
-        Ok(())
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     #[derive(Default)]
-    struct Fake {
-        states: HashMap<WindowId, WindowState>,
+    pub(crate) struct Fake {
+        pub(crate) states: HashMap<WindowId, WindowState>,
         aliases: HashMap<WindowId, WindowId>,
         moves: usize,
         resizes: usize,
@@ -381,36 +466,69 @@ mod tests {
         events: Vec<BackendEvent>,
         minimum_width: Option<f64>,
         fail_resize: bool,
+        fail_resize_window: Option<WindowId>,
+        permission_lost: bool,
+        lifecycle_error: Option<BackendError>,
+        resize_error: Option<BackendError>,
+        watched: std::collections::HashSet<WindowId>,
     }
     impl WindowBackend for Fake {
         fn same_window(&self, a: WindowId, b: WindowId) -> bool {
             self.aliases.get(&a).copied().unwrap_or(a) == self.aliases.get(&b).copied().unwrap_or(b)
         }
         fn trusted(&self) -> bool {
-            true
+            !self.permission_lost
+        }
+        fn watch(&mut self, id: WindowId, enabled: bool) {
+            if enabled {
+                self.watched.insert(id);
+            } else {
+                self.watched.remove(&id);
+            }
+        }
+        fn check_window(&mut self, id: WindowId) -> Result<()> {
+            if let Some(error) = &self.lifecycle_error {
+                return Err(error.clone());
+            }
+            self.states
+                .get(&self.aliases.get(&id).copied().unwrap_or(id))
+                .map(|_| ())
+                .ok_or_else(|| BackendError::new(ErrorKind::Closed, "Confirmed process exit"))
         }
         fn discover(&mut self) -> Result<Vec<WindowInfo>> {
             Ok(vec![])
         }
         fn state(&self, id: WindowId) -> Result<WindowState> {
-            self.states.get(&id).copied().ok_or("closed".into())
+            self.states
+                .get(&self.aliases.get(&id).copied().unwrap_or(id))
+                .copied()
+                .ok_or("state read failed".into())
         }
         fn move_window(&mut self, id: WindowId, x: f64, y: f64) -> Result<()> {
             self.moves += 1;
-            let state = self.states.get_mut(&id).unwrap();
+            let state = self
+                .states
+                .get_mut(&self.aliases.get(&id).copied().unwrap_or(id))
+                .unwrap();
             state.frame.x = x;
             state.frame.y = y;
             Ok(())
         }
         fn set_frame(&mut self, id: WindowId, mut f: Rect) -> Result<Rect> {
             self.resizes += 1;
-            if self.fail_resize {
+            if let Some(error) = &self.resize_error {
+                return Err(error.clone());
+            }
+            if self.fail_resize || self.fail_resize_window == Some(id) {
                 return Err("Resize denied".into());
             }
             if let Some(minimum) = self.minimum_width {
                 f.width = f.width.max(minimum);
             }
-            self.states.get_mut(&id).unwrap().frame = f;
+            self.states
+                .get_mut(&self.aliases.get(&id).copied().unwrap_or(id))
+                .unwrap()
+                .frame = f;
             Ok(f)
         }
         fn minimize(&mut self, id: WindowId, v: bool) -> Result<()> {
@@ -418,7 +536,10 @@ mod tests {
             if v && self.fail_minimize {
                 return Err("denied".into());
             }
-            self.states.get_mut(&id).unwrap().minimized = v;
+            self.states
+                .get_mut(&self.aliases.get(&id).copied().unwrap_or(id))
+                .unwrap()
+                .minimized = v;
             Ok(())
         }
         fn focus(&mut self, id: WindowId) -> Result<()> {
@@ -433,7 +554,7 @@ mod tests {
             std::mem::take(&mut self.events)
         }
     }
-    fn fixture() -> Engine<Fake> {
+    pub(crate) fn fixture() -> Engine<Fake> {
         let mut e = Engine::new(Fake::default(), Workspace::default());
         for id in 1..=2 {
             e.backend.states.insert(
@@ -774,5 +895,179 @@ mod tests {
         assert_eq!(e.backend.resizes, resized);
         assert_eq!(e.backend.states[&1].frame.x, 219.);
         assert_eq!(e.backend.states[&1].frame.width, Rect::default().width);
+    }
+    #[test]
+    fn a1_failed_release_then_confirmed_close_allows_quit() {
+        let mut e = fixture();
+        e.area.x += 200.;
+        e.switch(1).unwrap();
+        e.backend.fail_resize = true;
+        assert!(e.release(1).is_err());
+        e.backend.events.push(BackendEvent::Closed(1));
+        e.observe();
+        assert!(e.released.is_empty());
+        e.backend.fail_resize = false;
+        e.restore_all().unwrap();
+    }
+    #[test]
+    fn a4_resume_moves_all_previously_docked_windows() {
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        e.switch(2).unwrap();
+        let originals: Vec<_> = (1..=2).map(|id| e.live[&id].original).collect();
+        e.paused = Some("test".into());
+        e.resize(Rect {
+            x: 800.,
+            width: 1100.,
+            ..e.area
+        })
+        .unwrap();
+        e.backend.states.get_mut(&1).unwrap().minimized = true;
+        e.resume().unwrap();
+        for id in 1..=2 {
+            assert_eq!(e.backend.states[&id].frame, e.area);
+            assert!(!e.backend.states[&id].minimized);
+            assert_eq!(e.live[&id].original, originals[id as usize - 1]);
+        }
+        assert_eq!(e.backend.focused, Some(2));
+    }
+    #[test]
+    fn a4_resume_preflights_inactive_dialog_before_any_changes() {
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        e.switch(2).unwrap();
+        e.paused = Some("test".into());
+        e.backend.states.get_mut(&1).unwrap().modal = true;
+        let before = e.backend.states.clone();
+        assert!(e.resume().is_err());
+        assert!(e.paused.is_some());
+        assert_eq!(e.backend.states, before);
+    }
+
+    #[test]
+    fn a1_failed_release_process_exit_and_transient_errors() {
+        for kind in [ErrorKind::Communication, ErrorKind::Permission] {
+            let mut e = fixture();
+            e.area.x += 200.;
+            e.switch(1).unwrap();
+            e.backend.fail_resize = true;
+            assert!(e.release(1).is_err());
+            assert!(e.backend.watched.contains(&1));
+            let original = e.released[&1].original;
+            e.backend.lifecycle_error = Some(BackendError::new(kind, "transient"));
+            assert_eq!(e.retry_released().unwrap_err().causes[0].kind, kind);
+            assert_eq!(e.released[&1].original, original);
+            e.backend.lifecycle_error = None;
+            e.backend.states.remove(&1);
+            e.backend.fail_resize = false;
+            e.restore_all().unwrap();
+            assert!(e.released.is_empty());
+        }
+    }
+    #[test]
+    fn a4_partial_resume_records_progress_and_can_retry() {
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        e.switch(2).unwrap();
+        let original = e.live[&1].original;
+        e.paused = Some("test".into());
+        e.area.x = 900.;
+        e.backend.minimum_width = Some(1300.);
+        e.backend.fail_resize_window = Some(2);
+        assert!(e.resume().is_err());
+        assert!(e.paused.is_some());
+        assert_eq!(e.live[&1].expected.frame.x, 900.);
+        assert_eq!(e.live[&1].expected.frame.width, 1300.);
+        assert_eq!(e.live[&1].original, original);
+        e.backend.fail_resize_window = None;
+        e.resume().unwrap();
+        assert!(e.paused.is_none());
+        assert!(
+            e.live
+                .values()
+                .all(|a| a.expected.frame.x == 900. && a.expected.frame.width == 1300.)
+        );
+    }
+    #[test]
+    fn a4_no_selection_and_never_docked_attachments() {
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        e.selected = None;
+        let untouched = e.backend.states[&2];
+        e.paused = Some("test".into());
+        e.area.x = -700.;
+        e.resume().unwrap();
+        assert_eq!(e.backend.states[&1].frame.x, -700.);
+        assert_eq!(e.backend.states[&2], untouched);
+        e.backend.states.get_mut(&2).unwrap().frame.x = 777.;
+        e.backend.events.push(BackendEvent::Changed(2));
+        e.observe();
+        assert_eq!(e.backend.states[&2].frame.x, 777.);
+    }
+    #[test]
+    fn a4_permission_and_fullscreen_failures_keep_global_pause() {
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        e.backend.permission_lost = true;
+        assert_eq!(e.resume().unwrap_err().kind, ErrorKind::Permission);
+        assert!(e.paused.is_some());
+        e.backend.permission_lost = false;
+        e.backend.states.get_mut(&1).unwrap().fullscreen = true;
+        assert!(e.resume().is_err());
+        assert!(e.paused.is_some());
+    }
+    #[test]
+    fn d2_minimizing_one_window_pauses_all_docking_until_full_resume() {
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        e.switch(2).unwrap();
+        e.backend.states.get_mut(&1).unwrap().minimized = true;
+        e.backend.events.push(BackendEvent::Changed(1));
+        e.observe();
+        assert!(e.paused.is_some());
+        let before = e.backend.states.clone();
+        e.follow_workspace(Rect { x: 999., ..e.area }).unwrap();
+        assert_eq!(e.backend.states, before);
+        e.resume().unwrap();
+        assert!(
+            e.backend
+                .states
+                .values()
+                .all(|s| s.frame == e.area && !s.minimized)
+        );
+    }
+    #[test]
+    fn a1_replacement_handle_restores_original_detached_snapshot() {
+        let mut e = fixture();
+        let original = e.live[&1].original;
+        e.area.x = 500.;
+        e.switch(1).unwrap();
+        e.backend.fail_resize = true;
+        assert!(e.release(1).is_err());
+        let replacement = e.backend.states.remove(&1).unwrap();
+        e.backend.states.insert(99, replacement);
+        e.backend.aliases.insert(1, 99);
+        e.backend.fail_resize = false;
+        e.retry_released().unwrap();
+        assert_eq!(e.backend.states[&99], original);
+        assert!(!e.live.contains_key(&1));
+        assert!(e.released.is_empty());
+    }
+    #[test]
+    fn d3_unsettled_release_retains_snapshot_until_successful_retry() {
+        let mut e = fixture();
+        let original = e.live[&1].original;
+        e.area.x = 500.;
+        e.switch(1).unwrap();
+        e.backend.resize_error = Some(BackendError::new(
+            ErrorKind::UnsettledGeometry,
+            "scripted oscillation",
+        ));
+        assert_eq!(e.release(1).unwrap_err().kind, ErrorKind::UnsettledGeometry);
+        assert_eq!(e.released[&1].original, original);
+        e.backend.resize_error = None;
+        e.retry_released().unwrap();
+        assert!(e.released.is_empty());
+        assert_eq!(e.backend.states[&1], original);
     }
 }

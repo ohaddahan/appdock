@@ -218,3 +218,26 @@ Added optional Dock-badge mirroring to tabs. Numeric labels render as a small co
 - The [native view-bitmap preview](screenshots/tab-notification-badges.png) was inspected with dummy count 7 and dot values. Both fit inside the tab without overlapping the label or close button. This is not evidence of seven live unread Discord messages.
 - 37 tests passed, including numeric/99+/dot/zero/empty formatting. Formatting, Clippy with warnings denied, locked builds, release packaging and signature verification passed.
 - No messages, notification contents or app settings were read or modified. Badges are best-effort per app, not a universal per-window pending-action detector.
+
+## Review fixes — 2026-09-10 (current working tree)
+
+The current baseline was independently checked at **37 tests**, before implementing the review plan. The updated suite has **65 passing deterministic tests**. Formatting, Clippy with warnings denied, locked build, Rust **1.95.0** all-target/all-feature check, and diff whitespace checks pass. The earlier counts in this document describe older iterations.
+
+All A1–A6 defects are fixed. Global minimization pause and focus-operation checks are retained with regression coverage. Monotonic refresh deadlines, private app-list updates, typed backend errors, fixture extraction, and hosted `macos-15` CI configuration are implemented. Both delayed frame settling and final-owner backdrop lifetime were reproduced natively before their production fixes.
+
+The final full native run exercised **17 serial disposable-only cases**: 16 passed and D4 encountered a focus timeout during setup. D4 passed when rerun alone without a production change. After a final correction to retain closure evidence across preflight, all five affected native lifecycle/geometry/resume/discovery cases passed again. This intermittent native focus acquisition remains a validation limitation; it was not converted into a pass or hidden. The final frame fixture also checks an actual open rename editor against a changed selection snapshot and verifies picker/rename focus.
+
+See [the review tracker](REVIEW-TRACKER.md) for every finding's disposition, exact regression names, pre-fix failures, native results, and remaining gaps. [Full native manifest](review-evidence/native-verified/results.json), [D4 rerun](review-evidence/native-focus-recheck/results.json), and [deterministic output](review-evidence/deterministic.log) retain actual evidence. Hosted CI has been configured but not executed. No existing user windows, real workspace, installation, or deployment were changed.
+
+Run the local fixtures from a trusted desktop launch context:
+
+```sh
+cargo build --all-features --locked
+python3 scripts/review-native.py --output /tmp/appdock-review-results
+# Or select specific issues; each gets a new isolated directory:
+python3 scripts/review-native.py --output /tmp/appdock-review-selected --cases A1,A3,A4,D3,D6
+# Direct mode also requires a fresh isolated directory:
+APPDOCK_DATA_DIR="$(mktemp -d /tmp/appdock-review.XXXXXX)" target/debug/appdock --review-fixture A3
+```
+
+The runner only allows disposable fixtures; it does not run the historical Discord/Telegram smoke modes. Missing Accessibility yields exit code 2 and a **prerequisite failure**, including for cases that could otherwise appear to pass without exercising native control. Existing smoke command names remain unchanged.

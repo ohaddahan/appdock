@@ -16,7 +16,7 @@ pub fn load(path: &Path) -> Result<Workspace> {
     let data = match fs::read(path) {
         Ok(v) => v,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Workspace::default()),
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(e.to_string().into()),
     };
     let value: serde_json::Value = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
     if value["version"].as_u64() != Some(1) {
@@ -54,7 +54,7 @@ pub fn save(path: &Path, workspace: &Workspace) -> Result<()> {
     file.write_all(&bytes)
         .and_then(|_| file.sync_all())
         .map_err(|e| e.to_string())?;
-    fs::rename(temporary, path).map_err(|e| e.to_string())
+    fs::rename(temporary, path).map_err(|e| e.to_string().into())
 }
 #[cfg(test)]
 mod tests {

@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 pub type WindowId = u64;
 pub type TabId = u64;
-pub type Result<T> = std::result::Result<T, String>;
+pub use crate::error::{BackendError, ErrorKind};
+pub type Result<T> = std::result::Result<T, BackendError>;
 
 /// Compact presentation of an app-wide Dock badge. Unknown text is a dot,
 /// never a guessed unread count. Empty labels and an explicit zero are clear.
@@ -126,6 +127,10 @@ pub trait WindowBackend {
         a == b
     }
     fn discover(&mut self) -> Result<Vec<WindowInfo>>;
+    /// Positive closure requires lifecycle evidence; a failed state read is insufficient.
+    fn check_window(&mut self, id: WindowId) -> Result<()> {
+        self.state(id).map(|_| ())
+    }
     fn state(&self, id: WindowId) -> Result<WindowState>;
     fn set_frame(&mut self, id: WindowId, frame: Rect) -> Result<Rect>;
     fn move_window(&mut self, id: WindowId, x: f64, y: f64) -> Result<()> {
@@ -141,7 +146,8 @@ pub trait WindowBackend {
             Restoration::Exact => Ok(()),
             Restoration::Adjusted { requested, actual } => Err(format!(
                 "Window geometry differs after rollback: requested {requested:?}, actual {actual:?}"
-            )),
+            )
+            .into()),
         }
     }
     /// Release accepts the frame the app/desktop permits. An exact-coordinate
@@ -248,5 +254,140 @@ mod action_tests {
     #[test]
     fn explicitly_selected_disconnected_tab_wins_over_live_selection() {
         assert_eq!(action_tab(Some(7), Some(8), &[tab(7), tab(8)]), Some(7));
+    }
+}
+
+/// Explicit disconnected action selection survives live selection updates. Live
+/// action targets follow confirmed activation; a rename editor owns its own ID.
+pub fn selection_for_actions(
+    action: Option<TabId>,
+    selected: Option<TabId>,
+    tabs: &[SavedTab],
+    live: &[(TabId, WindowId)],
+) -> Option<TabId> {
+    let disconnected = action.filter(|id| !live.iter().any(|(tab, _)| tab == id));
+    action_tab(disconnected, selected, tabs)
+}
+
+/// Navigate from intent until acknowledged. Resolve IDs against the current tab
+/// order so removals/reorders cannot turn an old index into a different target.
+pub fn navigation_target(
+    tabs: &[SavedTab],
+    requested: Option<TabId>,
+    selected: Option<TabId>,
+    previous: bool,
+) -> Option<TabId> {
+    if tabs.is_empty() {
+        return None;
+    }
+    let index_of = |id| tabs.iter().position(|t| Some(t.id) == id);
+    let index = index_of(requested).or_else(|| index_of(selected));
+    let next = match index {
+        None => {
+            if previous {
+                tabs.len() - 1
+            } else {
+                0
+            }
+        }
+        Some(i) if previous => (i + tabs.len() - 1) % tabs.len(),
+        Some(i) => (i + 1) % tabs.len(),
+    };
+    Some(tabs[next].id)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabIndication {
+    Active,
+    Action,
+    Inactive,
+}
+pub fn tab_indication(
+    id: TabId,
+    connected: bool,
+    selected: Option<TabId>,
+    action: Option<TabId>,
+) -> TabIndication {
+    if connected && selected == Some(id) {
+        TabIndication::Active
+    } else if !connected && action == Some(id) {
+        TabIndication::Action
+    } else {
+        TabIndication::Inactive
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    fn tabs(ids: &[TabId]) -> Vec<SavedTab> {
+        ids.iter()
+            .map(|id| SavedTab {
+                id: *id,
+                name: "fixture".into(),
+                identity: Identity {
+                    bundle: "fixture".into(),
+                    identifier: None,
+                },
+            })
+            .collect()
+    }
+    #[test]
+    fn a2_attach_replace_failed_switch_and_direct_activation_indications() {
+        for (selected, active) in [(Some(2), 2), (Some(1), 1), (Some(3), 3)] {
+            for id in 1..=3 {
+                assert_eq!(
+                    tab_indication(id, true, selected, Some(1)),
+                    if id == active {
+                        TabIndication::Active
+                    } else {
+                        TabIndication::Inactive
+                    }
+                );
+            }
+        }
+        assert_eq!(
+            tab_indication(1, false, Some(2), Some(1)),
+            TabIndication::Action
+        );
+        assert_eq!(
+            tab_indication(2, true, Some(2), Some(1)),
+            TabIndication::Active
+        );
+        assert_eq!(action_tab(Some(1), Some(2), &tabs(&[2])), Some(2));
+    }
+    #[test]
+    fn a6_reordered_removed_empty_single_and_invalid_requests() {
+        assert_eq!(
+            navigation_target(&tabs(&[3, 1, 2]), Some(1), Some(3), false),
+            Some(2)
+        );
+        assert_eq!(
+            navigation_target(&tabs(&[3, 2]), Some(1), Some(3), false),
+            Some(2)
+        );
+        assert_eq!(navigation_target(&[], Some(1), Some(3), false), None);
+        assert_eq!(navigation_target(&tabs(&[1]), Some(1), None, true), Some(1));
+        assert_eq!(
+            navigation_target(&tabs(&[2, 3]), Some(9), Some(8), false),
+            Some(2)
+        );
+        assert_eq!(navigation_target(&tabs(&[2, 3]), None, None, true), Some(3));
+    }
+    #[test]
+    fn a2_actions_follow_live_activation_and_preserve_disconnected_target() {
+        let tabs = tabs(&[1, 2, 3]);
+        assert_eq!(
+            selection_for_actions(Some(1), Some(2), &tabs, &[(1, 10), (2, 20)]),
+            Some(2)
+        );
+        assert_eq!(
+            selection_for_actions(Some(3), Some(2), &tabs, &[(1, 10), (2, 20)]),
+            Some(3)
+        );
+        assert_eq!(
+            selection_for_actions(Some(2), Some(1), &tabs, &[(1, 10), (2, 20)]),
+            Some(1)
+        );
     }
 }

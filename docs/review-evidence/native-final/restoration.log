@@ -1,0 +1,2 @@
+Native overlay fixture passed: 12 same-app duplicate-title switches, active above opaque cover above inactive, controls keep keyboard focus, no minimization, movement/resizing and original-state restoration
+Native constrained-restoration regression passed: unavailable original geometry did not block close; tabs and recovery state cleared

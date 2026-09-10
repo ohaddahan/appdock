@@ -1,0 +1,7 @@
+Use case: logo-brand
+Asset type: native macOS application icon for AppDock, an app that brings existing application windows into one tabbed workspace.
+Primary request: create one polished, distinctive icon: three offset rounded tabbed-window silhouettes nest into one cohesive compact stack. The front window is warm ivory, with two broad sunset coral and burnt-orange tabbed silhouettes peeking behind it at the upper left and upper right, clearly conveying many apps gathered into a single place. Use only a few bold geometric pieces and crisp negative space; make the front window's dark interior cutout generously sized, with a simple thick ivory frame and one integrated tab shoulder.
+Scene/backdrop: charcoal rounded-square macOS-style icon tile on a genuinely transparent background. The tile fills about 80 percent of the square canvas, centered, leaving even generous transparent padding outside.
+Style/medium: sophisticated graphic brand icon, mostly flat geometric shapes, restrained soft bevel and subtle depth only. Warm tactile feel, precise curves, no busy details. Straight-on view.
+Color palette: charcoal #24252A tile, warm ivory #FFF0D9, orange #EF8E46, coral #F06353.
+Constraints: a single icon only, no words, no letters, no logo label, no watermark, no mockup, no sheet of options. Large simple shapes legible at 32 pixels. No traffic-light buttons, tiny UI controls, gradients, glass effects, metallic shine, glow, paper folds, perspective or extraneous objects. Real transparent alpha outside the tile, never draw a checkerboard.

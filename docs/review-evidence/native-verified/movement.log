@@ -1,0 +1,3 @@
+Native position-only follow: 20 updates in 2.8 ms (0.14 ms/update), final frame verified
+Native movement regression passed: drag retained ownership, duplicate rejected, window returned
+Fixture restoration: Ok(())

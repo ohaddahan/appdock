@@ -53,15 +53,47 @@ pub enum Command {
     EditingBarrier(u64),
     ReadBadges(i32, Vec<(TabId, WindowId, String)>),
 }
+#[derive(Clone, Copy, Debug)]
+struct GeometryRequest {
+    area: Rect,
+    geometry: Rect,
+    revision: u64,
+}
+#[derive(Default)]
+struct MailboxState {
+    queue: VecDeque<Command>,
+    geometry: Option<GeometryRequest>,
+    revision: u64,
+}
 #[derive(Default)]
 struct Mailbox {
-    queue: Mutex<VecDeque<Command>>,
+    state: Mutex<MailboxState>,
     wake: Condvar,
+    interruption: AtomicU64,
 }
 impl Mailbox {
     fn push(&self, c: Command) {
-        let mut q = self.queue.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        if let Command::Resize(area, geometry) = &c {
+            state.revision += 1;
+            state.geometry = Some(GeometryRequest {
+                area: *area,
+                geometry: *geometry,
+                revision: state.revision,
+            });
+        }
+        if matches!(
+            c,
+            Command::Quit | Command::Pause | Command::Release(_) | Command::EditingBarrier(_)
+        ) {
+            self.interruption.fetch_add(1, Ordering::SeqCst);
+        }
+        let q = &mut state.queue;
         match c {
+            Command::Discover => {
+                q.retain(|c| !matches!(c, Command::Discover));
+                q.push_back(c);
+            }
             Command::ReadBadges(..) => {
                 q.retain(|c| !matches!(c, Command::ReadBadges(..)));
                 q.push_back(c);
@@ -118,12 +150,23 @@ impl Mailbox {
         self.wake.notify_one();
     }
     fn receive(&self, timeout: Duration) -> Option<Command> {
-        let q = self.queue.lock().unwrap();
-        let (mut q, _) = self
+        let state = self.state.lock().unwrap();
+        let (mut state, _) = self
             .wake
-            .wait_timeout_while(q, timeout, |q| q.is_empty())
+            .wait_timeout_while(state, timeout, |state| state.queue.is_empty())
             .unwrap();
-        q.pop_front()
+        state.queue.pop_front()
+    }
+    fn geometry(&self) -> Option<GeometryRequest> {
+        self.state.lock().unwrap().geometry
+    }
+    fn priority_pending(&self) -> bool {
+        self.state.lock().unwrap().queue.iter().any(|c| {
+            matches!(
+                c,
+                Command::Quit | Command::Pause | Command::Release(_) | Command::EditingBarrier(_)
+            )
+        })
     }
 }
 #[derive(Clone)]
@@ -133,7 +176,7 @@ pub struct Client {
     generation: Arc<AtomicU64>,
     pointer_down: Arc<AtomicBool>,
     focus_suspended: Arc<AtomicBool>,
-    requested_tab: Arc<Mutex<Option<TabId>>>,
+    requested_tab: Arc<Mutex<Option<(TabId, u64)>>>,
 }
 impl Client {
     pub fn set_text_editing(&self, editing: bool) -> u64 {
@@ -155,14 +198,36 @@ impl Client {
     }
     pub fn switch(&self, id: TabId) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        *self.requested_tab.lock().unwrap() = Some(id);
+        *self.requested_tab.lock().unwrap() = Some((id, generation));
         self.send(Command::Switch(id, generation));
     }
+    pub fn navigate(
+        &self,
+        tabs: &[SavedTab],
+        selected: Option<TabId>,
+        previous: bool,
+    ) -> Option<TabId> {
+        let mut requested = self.requested_tab.lock().unwrap();
+        let target = navigation_target(tabs, requested.map(|(id, _)| id), selected, previous)?;
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        *requested = Some((target, generation));
+        self.mailbox.push(Command::Switch(target, generation));
+        Some(target)
+    }
+    fn acknowledge_switch(&self, id: TabId, generation: u64) {
+        let mut requested = self.requested_tab.lock().unwrap();
+        if *requested == Some((id, generation)) {
+            requested.take();
+        }
+    }
     pub fn is_switching_to(&self, id: TabId) -> bool {
-        *self.requested_tab.lock().unwrap() == Some(id)
+        self.requested_tab
+            .lock()
+            .unwrap()
+            .is_some_and(|(tab, _)| tab == id)
     }
 }
-pub fn start(workspace: Workspace) -> Client {
+fn client(workspace: Workspace) -> Client {
     let snapshot = Snapshot {
         workspace: workspace.clone(),
         selected: None,
@@ -183,14 +248,17 @@ pub fn start(workspace: Workspace) -> Client {
         stacked_windows: vec![],
         badges: std::collections::BTreeMap::new(),
     };
-    let client = Client {
+    Client {
         mailbox: Arc::new(Mailbox::default()),
         snapshot: Arc::new(Mutex::new(snapshot)),
         generation: Arc::new(AtomicU64::new(0)),
         pointer_down: Arc::new(AtomicBool::new(false)),
         focus_suspended: Arc::new(AtomicBool::new(false)),
         requested_tab: Arc::new(Mutex::new(None)),
-    };
+    }
+}
+pub fn start(workspace: Workspace) -> Client {
+    let client = client(workspace.clone());
     let c = client.clone();
     thread::spawn(move || {
         let mut backend = MacBackend::new();
@@ -204,6 +272,7 @@ pub fn start(workspace: Workspace) -> Client {
         let mut close_attempt = 0;
         let mut next_observe = Instant::now();
         let mut save_after: Option<Instant> = None;
+        let mut geometry_revision = 0;
         loop {
             let deadline = save_after.map_or(next_observe, |t| t.min(next_observe));
             let command = c
@@ -214,8 +283,17 @@ pub fn start(workspace: Workspace) -> Client {
                 _ => None,
             };
             let mut dirty = false;
+            let geometry = c.mailbox.geometry();
+            if let Some(request) = geometry.filter(|request| request.revision > geometry_revision) {
+                engine.workspace.geometry = request.geometry;
+                geometry_revision = request.revision;
+                save_after = Some(Instant::now() + Duration::from_millis(250));
+            }
             let mut stopped = false;
             let result: Result<()> = match command {
+                Some(
+                    Command::Attach(..) | Command::Switch(..) | Command::Raise | Command::Resume,
+                ) if quitting => Ok(()),
                 Some(Command::ReadBadges(pid, targets)) => {
                     if !c.pointer_down.load(Ordering::Relaxed)
                         && !c.focus_suspended.load(Ordering::SeqCst)
@@ -236,12 +314,21 @@ pub fn start(workspace: Workspace) -> Client {
                     Ok(())
                 }
                 Some(Command::Apps(apps)) => {
-                    engine.backend.apps = apps;
+                    engine.backend.update_apps(apps);
                     Ok(())
                 }
-                Some(Command::Discover) => engine.backend.discover().map(|w| {
-                    windows = w;
-                }),
+                Some(Command::Discover) => {
+                    let epoch = c.mailbox.interruption.load(Ordering::SeqCst);
+                    engine
+                        .backend
+                        .discover_current(|| {
+                            epoch == c.mailbox.interruption.load(Ordering::SeqCst)
+                                && !c.mailbox.priority_pending()
+                        })
+                        .map(|w| {
+                            windows = w;
+                        })
+                }
                 Some(Command::Attach(tab, id)) => {
                     dirty = true;
                     match windows.iter().find(|w| w.id == id) {
@@ -254,11 +341,9 @@ pub fn start(workspace: Workspace) -> Client {
                 {
                     engine.switch_current(id, || generation == c.generation.load(Ordering::SeqCst))
                 }
-                Some(Command::Resize(area, geometry)) => {
-                    save_after = Some(Instant::now() + Duration::from_millis(250));
+                Some(Command::Resize(..)) => {
                     next_observe = Instant::now() + Duration::from_millis(100);
-                    engine.workspace.geometry = geometry;
-                    engine.follow_workspace(area)
+                    apply_geometry(&mut engine, geometry, !quitting)
                 }
                 Some(Command::Rename(id, name)) => {
                     dirty = true;
@@ -293,14 +378,18 @@ pub fn start(workspace: Workspace) -> Client {
                         view.restore_pending = engine.released.len();
                         view.status = "Window released; restoring original state…".into();
                     }
-                    engine.restore_released(id)
+                    let restored = engine.restore_released(id);
+                    let moved = apply_geometry(&mut engine, geometry, !quitting);
+                    restored.and(moved)
                 }
                 Some(Command::RetryRestoration) => engine.retry_released(),
                 Some(Command::Pause) => {
                     engine.paused = Some("Desktop changed".into());
-                    Ok(())
+                    apply_geometry(&mut engine, geometry, false)
                 }
-                Some(Command::Resume) => engine.resume(),
+                Some(Command::Resume) => {
+                    apply_geometry(&mut engine, geometry, false).and_then(|()| engine.resume())
+                }
                 Some(Command::RequestPermission) => {
                     crate::macos::request_permission();
                     Ok(())
@@ -320,15 +409,13 @@ pub fn start(workspace: Workspace) -> Client {
                     dirty = true;
                     quitting = true;
                     close_attempt += 1;
-                    engine.observe();
+                    let _ = apply_geometry(&mut engine, geometry, false);
                     match engine.restore_all() {
                         Ok(()) => {
                             stopped = true;
                             Ok(())
                         }
-                        Err(e) => Err(format!(
-                            "Cannot finish closing: {e}. Resolve the window-control error, then Retry close."
-                        )),
+                        Err(e) => Err(e.context("Cannot finish closing. Resolve the window-control error, then Retry close")),
                     }
                 }
                 Some(Command::CancelQuit) => {
@@ -338,7 +425,9 @@ pub fn start(workspace: Workspace) -> Client {
                 _ => Ok(()),
             };
             if let Err(e) = result {
-                status = e;
+                if e.kind != ErrorKind::Cancelled {
+                    status = e.to_string();
+                }
             } else if dirty {
                 status = "Ready".into();
             }
@@ -351,12 +440,28 @@ pub fn start(workspace: Workspace) -> Client {
                     status = notes.join("\n");
                 }
             }
-            if !stopped && !quitting && Instant::now() >= next_observe {
+            if !stopped
+                && !quitting
+                && !c.mailbox.priority_pending()
+                && Instant::now() >= next_observe
+            {
                 next_observe = Instant::now() + Duration::from_millis(250);
                 engine.pointer_down = c.pointer_down.load(Ordering::Relaxed);
                 let tabs_before = engine.workspace.tabs.len();
                 engine.observe();
                 dirty |= engine.workspace.tabs.len() != tabs_before;
+            }
+            if let Some(request) = c
+                .mailbox
+                .geometry()
+                .filter(|request| request.revision > geometry_revision)
+            {
+                geometry_revision = request.revision;
+                engine.workspace.geometry = request.geometry;
+                if quitting || engine.paused.is_some() {
+                    engine.area = request.area;
+                }
+                dirty = true;
             }
             if dirty || save_after.is_some_and(|t| Instant::now() >= t) {
                 save_after = None;
@@ -438,10 +543,7 @@ pub fn start(workspace: Workspace) -> Client {
                     }),
             };
             if let Some((id, generation)) = completing_switch {
-                let mut requested = c.requested_tab.lock().unwrap();
-                if *requested == Some(id) && generation == c.generation.load(Ordering::SeqCst) {
-                    requested.take();
-                }
+                c.acknowledge_switch(id, generation);
             }
             if stopped {
                 break;
@@ -449,6 +551,24 @@ pub fn start(workspace: Workspace) -> Client {
         }
     });
     client
+}
+
+/// Geometry persists independently of a cancellable movement command. Reading an
+/// older revision never consumes a newer request in the mailbox.
+fn apply_geometry<B: WindowBackend>(
+    engine: &mut Engine<B>,
+    request: Option<GeometryRequest>,
+    move_windows: bool,
+) -> Result<()> {
+    if let Some(request) = request {
+        engine.workspace.geometry = request.geometry;
+        if move_windows {
+            engine.follow_workspace(request.area)?;
+        } else {
+            engine.area = request.area;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -505,5 +625,119 @@ mod tests {
         let waiter = thread::spawn(move || target.receive(Duration::from_secs(1)));
         m.push(Command::Release(9));
         assert!(matches!(waiter.join().unwrap(), Some(Command::Release(9))));
+    }
+    #[test]
+    fn a3_resize_release_multiple_releases_pause_resume_and_quit_save_latest() {
+        use crate::engine::tests::fixture;
+        let m = Mailbox::default();
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        e.switch(2).unwrap();
+        let old = e.backend.states[&1];
+        let r = Rect {
+            x: 700.,
+            width: 1200.,
+            ..Rect::default()
+        };
+        m.push(Command::Resize(r, r));
+        m.push(Command::Release(1));
+        assert!(matches!(
+            m.receive(Duration::ZERO),
+            Some(Command::Release(1))
+        ));
+        e.release(1).unwrap();
+        let released = e.backend.states[&1];
+        apply_geometry(&mut e, m.geometry(), true).unwrap();
+        assert_eq!(e.backend.states[&1], released);
+        assert_eq!(e.backend.states[&2].frame, r);
+        assert_eq!(e.workspace.geometry, r);
+        assert_eq!(old, released);
+        let r2 = Rect {
+            x: -300.,
+            width: 1400.,
+            ..r
+        };
+        m.push(Command::Resize(r2, r2));
+        m.push(Command::Pause);
+        e.paused = Some("test".into());
+        apply_geometry(&mut e, m.geometry(), false).unwrap();
+        assert_eq!(e.backend.states[&2].frame, r);
+        e.resume().unwrap();
+        assert_eq!(e.backend.states[&2].frame, r2);
+        m.push(Command::Release(2));
+        e.release(2).unwrap();
+        let before_quit = e.backend.states.clone();
+        m.push(Command::Resize(r, r));
+        m.push(Command::Quit);
+        apply_geometry(&mut e, m.geometry(), false).unwrap();
+        e.restore_all().unwrap();
+        assert_eq!(e.backend.states, before_quit);
+        let path = std::env::temp_dir().join(format!("appdock-a3-{}.json", std::process::id()));
+        persistence::save(&path, &e.workspace).unwrap();
+        assert_eq!(persistence::load(&path).unwrap().geometry, r);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn a3_old_geometry_acknowledgement_cannot_erase_concurrent_request() {
+        let m = Mailbox::default();
+        let mut e = crate::engine::tests::fixture();
+        let old = Rect::default();
+        let new = Rect { x: 900., ..old };
+        m.push(Command::Resize(old, old));
+        let processing = m.geometry();
+        m.push(Command::Resize(new, new));
+        apply_geometry(&mut e, processing, true).unwrap();
+        assert_eq!(m.geometry().unwrap().geometry, new);
+        assert!(m.geometry().unwrap().revision > processing.unwrap().revision);
+        apply_geometry(&mut e, m.geometry(), true).unwrap();
+        assert_eq!(e.workspace.geometry, new);
+    }
+    #[test]
+    fn a5_discovery_coalesces_and_priority_interrupts_current_call() {
+        let m = Mailbox::default();
+        m.push(Command::Discover);
+        m.push(Command::Discover);
+        assert!(matches!(m.receive(Duration::ZERO), Some(Command::Discover)));
+        assert!(m.receive(Duration::ZERO).is_none());
+        let epoch = m.interruption.load(Ordering::SeqCst);
+        let result = crate::native_ops::prepared_request(
+            || epoch == m.interruption.load(Ordering::SeqCst),
+            || Ok(()),
+            || {
+                m.push(Command::Discover);
+                m.push(Command::Release(1));
+                m.push(Command::Quit);
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+        assert!(matches!(m.receive(Duration::ZERO), Some(Command::Quit)));
+        assert!(matches!(
+            m.receive(Duration::ZERO),
+            Some(Command::Release(1))
+        ));
+        assert!(matches!(m.receive(Duration::ZERO), Some(Command::Discover)));
+    }
+    #[test]
+    fn a6_bursts_mixed_directions_wraparound_and_stale_acknowledgements() {
+        let workspace = crate::engine::tests::fixture().workspace;
+        let c = client(workspace.clone());
+        let tabs = &workspace.tabs;
+        assert_eq!(c.navigate(tabs, Some(1), false), Some(2));
+        let first = c.generation.load(Ordering::SeqCst);
+        assert_eq!(c.navigate(tabs, Some(1), false), Some(1));
+        assert_eq!(c.navigate(tabs, Some(1), true), Some(2));
+        c.acknowledge_switch(2, first);
+        assert!(c.is_switching_to(2));
+        let last = c.generation.load(Ordering::SeqCst);
+        c.acknowledge_switch(2, last);
+        assert!(!c.is_switching_to(2));
+        assert_eq!(c.navigate(tabs, Some(1), false), Some(2)); // failed switch falls back to confirmed
+        c.set_text_editing(true);
+        assert!(!c.is_switching_to(2));
+        assert!(matches!(
+            c.mailbox.receive(Duration::ZERO),
+            Some(Command::EditingBarrier(_))
+        ));
     }
 }

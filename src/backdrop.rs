@@ -11,8 +11,18 @@ use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone)]
 pub struct Backdrop {
+    inner: Rc<Inner>,
+}
+struct Inner {
     window: Retained<NSWindow>,
-    selected: Rc<Cell<Option<u32>>>,
+    selected: Cell<Option<u32>>,
+}
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // NSApplication can retain a visible NSWindow. End visibility when the
+        // final Rust owner goes away; dropping an intermediate clone is harmless.
+        self.window.orderOut(None);
+    }
 }
 impl Backdrop {
     pub fn new(m: MainThreadMarker) -> Self {
@@ -33,27 +43,30 @@ impl Backdrop {
         window.setHasShadow(false);
         window.setAnimationBehavior(NSWindowAnimationBehavior::None);
         Self {
-            window,
-            selected: Rc::new(Cell::new(None)),
+            inner: Rc::new(Inner {
+                window,
+                selected: Cell::new(None),
+            }),
         }
     }
     pub fn hide(&self) {
-        self.selected.set(None);
-        if self.window.isVisible() {
-            self.window.orderOut(None);
+        self.inner.selected.set(None);
+        if self.inner.window.isVisible() {
+            self.inner.window.orderOut(None);
         }
     }
     /// Safe inside a key-window callback: no UI borrow, focus change or AX IPC.
     pub fn keep_below_selected(&self) {
-        if let Some(number) = self.selected.get() {
-            self.window
+        if let Some(number) = self.inner.selected.get() {
+            self.inner
+                .window
                 .orderWindow_relativeTo(NSWindowOrderingMode::Below, number as isize);
         }
     }
     pub fn follow(&self, area: Rect, primary_height: f64) {
-        if self.window.isVisible() {
-            let size = self.window.frame().size;
-            self.window.setFrame_display(
+        if self.inner.window.isVisible() {
+            let size = self.inner.window.frame().size;
+            self.inner.window.setFrame_display(
                 NSRect::new(
                     NSPoint::new(area.x, primary_height - area.y - size.height),
                     size,
@@ -77,7 +90,7 @@ impl Backdrop {
             self.hide();
             return;
         };
-        self.selected.set(Some(selected));
+        self.inner.selected.set(Some(selected));
         // Keep the cover behind both the app and its manager. The manager stays
         // behind the app during normal interaction and above it for inline UI.
         let anchor_index = controls
@@ -93,19 +106,20 @@ impl Backdrop {
             NSPoint::new(bounds.x, primary_height - bounds.y - bounds.height),
             NSSize::new(bounds.width, bounds.height),
         );
-        if self.window.frame() != frame {
-            self.window.setFrame_display(frame, true);
+        if self.inner.window.frame() != frame {
+            self.inner.window.setFrame_display(frame, true);
         }
         if stack
             .get(anchor_index + 1)
-            .is_none_or(|w| w.number as isize != self.window.windowNumber())
+            .is_none_or(|w| w.number as isize != self.inner.window.windowNumber())
         {
-            self.window
+            self.inner
+                .window
                 .orderWindow_relativeTo(NSWindowOrderingMode::Below, anchor as isize);
         }
     }
     pub fn number(&self) -> u32 {
-        self.window.windowNumber() as u32
+        self.inner.window.windowNumber() as u32
     }
 }
 

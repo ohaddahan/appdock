@@ -73,7 +73,7 @@ pub fn run(smoke: bool) -> Result<()> {
         .collect();
     std::thread::spawn(move || {
         let mut b = MacBackend::new();
-        b.apps = apps;
+        b.update_apps(apps);
         println!("Accessibility trusted: {}", b.trusted());
         let windows = b.discover()?;
         for bundle in ["com.hnc.Discord", "org.telegram.desktop"] {
@@ -103,7 +103,8 @@ pub fn run(smoke: bool) -> Result<()> {
             if matches.len() != 1 {
                 return Err(format!(
                     "Smoke test requires exactly one eligible window for {bundle}"
-                ));
+                )
+                .into());
             }
             ids.push(e.attach(None, matches[0])?);
         }
@@ -144,9 +145,8 @@ pub fn run(smoke: bool) -> Result<()> {
             for (id, original) in originals {
                 let actual = e.backend.state(id)?;
                 if !actual.frame.near(original.frame) || actual.minimized != original.minimized {
-                    restoration = Err(format!(
-                        "Window {id} restoration readback differs: {actual:?}"
-                    ));
+                    restoration =
+                        Err(format!("Window {id} restoration readback differs: {actual:?}").into());
                 }
             }
         }
@@ -178,7 +178,7 @@ pub fn movement_fixture() -> Result<()> {
     let pid = child.id() as i32;
     let outcome=std::thread::spawn(move || {
         let mut backend=MacBackend::new();
-        backend.apps=vec![App{pid,name:"Disposable AppDock fixture".into(),bundle:"dev.appdock.fixture".into()}];
+        backend.update_apps(vec![App{pid,name:"Disposable AppDock fixture".into(),bundle:"dev.appdock.fixture".into()}]);
         let mut found=None;
         for _ in 0..50 {
             if let Ok(windows)=backend.discover() && let Some(w)=windows.into_iter().find(|w|w.eligible) {found=Some(w);break;}
@@ -198,7 +198,7 @@ pub fn movement_fixture() -> Result<()> {
             engine.pointer_down=false;
             engine.observe();
             let actual=engine.backend.state(window.id)?.frame;
-            if !actual.near(engine.area) || engine.paused.is_some() {return Err(format!("Fixture did not return to docking area: {actual:?}"));}
+            if !actual.near(engine.area) || engine.paused.is_some() {return Err(format!("Fixture did not return to docking area: {actual:?}").into());}
             let started=std::time::Instant::now();
             for step in 0..20 {engine.follow_workspace(Rect{x:180.+step as f64*3.,..engine.area})?;}
             let elapsed=started.elapsed();
@@ -219,7 +219,7 @@ pub fn movement_fixture() -> Result<()> {
         });
         println!("Fixture restoration: {restored:?}");
         exercise.and(restored)
-    }).join().map_err(|_|"Movement fixture worker panicked".to_string()).and_then(|r|r);
+    }).join().map_err(|_|BackendError::from("Movement fixture worker panicked")).and_then(|r|r);
     // This child was created solely for this test and has no attached windows.
     let _ = child.kill();
     let _ = child.wait();
@@ -308,11 +308,11 @@ pub fn overlay_fixture(constrained_restore: bool) -> Result<()> {
     let (ack_tx, ack_rx) = mpsc::channel::<Result<()>>();
     let worker = std::thread::spawn(move || -> Result<()> {
         let mut backend = MacBackend::new();
-        backend.apps = vec![App {
+        backend.update_apps(vec![App {
             pid,
             name: "Fixture".into(),
             bundle: "dev.appdock.fixture".into(),
-        }];
+        }]);
         let mut targets = Vec::new();
         for _ in 0..50 {
             targets = backend.discover()?;
@@ -325,7 +325,8 @@ pub fn overlay_fixture(constrained_restore: bool) -> Result<()> {
             return Err(format!(
                 "Expected two eligible disposable windows, found {}",
                 targets.len()
-            ));
+            )
+            .into());
         }
         let mut engine = Engine::new(backend, Workspace::default());
         let mut ids = Vec::new();
@@ -459,7 +460,7 @@ pub fn overlay_fixture(constrained_restore: bool) -> Result<()> {
                     return Err(format!(
                         "Incorrect overlay order: selected {selected} at {active}, cover {} at {cover}, other {other:?}",
                         backdrop.number()
-                    ));
+                    ).into());
                 }
                 Ok(())
             })();

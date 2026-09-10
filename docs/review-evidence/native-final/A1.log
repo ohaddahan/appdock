@@ -1,0 +1,5 @@
+review case=A1 accessibility=true
+Window operations failed
+Window operations failed
+Released window still awaits restoration: AXWindows: Accessibility request (AX -25204)
+Tab 3: AXWindows: Accessibility request (AX -25204)

@@ -1,0 +1,31 @@
+   Compiling appdock v0.1.0 (/Users/ohaddahan/RustroverProjects/appdock)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+     Running unittests src/main.rs (target/debug/deps/appdock-726fa8d9c57e9a5f)
+
+running 2 tests
+test native_ops::tests::d3_delayed_geometry_must_not_succeed_on_first_unchanged_poll ... FAILED
+test native_ops::tests::d3_oscillation_reports_unsettled_geometry ... FAILED
+
+failures:
+
+---- native_ops::tests::d3_delayed_geometry_must_not_succeed_on_first_unchanged_poll stdout ----
+
+thread 'native_ops::tests::d3_delayed_geometry_must_not_succeed_on_first_unchanged_poll' (26960729) panicked at src/native_ops.rs:129:9:
+assertion `left == right` failed
+  left: Rect { x: 120.0, y: 120.0, width: 1000.0, height: 740.0 }
+ right: Rect { x: 600.0, y: 120.0, width: 1000.0, height: 740.0 }
+
+---- native_ops::tests::d3_oscillation_reports_unsettled_geometry stdout ----
+
+thread 'native_ops::tests::d3_oscillation_reports_unsettled_geometry' (26960730) panicked at src/native_ops.rs:135:70:
+called `Result::unwrap_err()` on an `Ok` value: Rect { x: 120.0, y: 120.0, width: 1000.0, height: 740.0 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    native_ops::tests::d3_delayed_geometry_must_not_succeed_on_first_unchanged_poll
+    native_ops::tests::d3_oscillation_reports_unsettled_geometry
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin appdock`

@@ -1,0 +1,73 @@
+   Compiling appdock v0.1.0 (/Users/ohaddahan/RustroverProjects/appdock)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.59s
+     Running unittests src/main.rs (target/debug/deps/appdock-726fa8d9c57e9a5f)
+
+running 65 tests
+test backdrop::tests::cover_includes_larger_inactive_windows_and_negative_desktop_coordinates ... ok
+test engine::tests::disconnected_app_requires_replace_instead_of_duplicate_add ... ok
+test engine::tests::d3_unsettled_release_retains_snapshot_until_successful_retry ... ok
+test engine::tests::a4_no_selection_and_never_docked_attachments ... ok
+test engine::tests::exit_restores_every_attached_window ... ok
+test engine::tests::a4_partial_resume_records_progress_and_can_retry ... ok
+test engine::tests::a4_permission_and_fullscreen_failures_keep_global_pause ... ok
+test engine::tests::confirmed_closed_target_removes_its_tab ... ok
+test engine::tests::a1_replacement_handle_restores_original_detached_snapshot ... ok
+test engine::tests::a1_failed_release_process_exit_and_transient_errors ... ok
+test engine::tests::a4_resume_preflights_inactive_dialog_before_any_changes ... ok
+test engine::tests::actual_window_control_failure_keeps_retry_snapshot ... ok
+test engine::tests::a1_failed_release_then_confirmed_close_allows_quit ... ok
+test engine::tests::close_accepts_constrained_geometry_and_restores_minimized_state ... ok
+test engine::tests::failed_release_keeps_original_snapshot_for_retry ... ok
+test engine::tests::a4_resume_moves_all_previously_docked_windows ... ok
+test engine::tests::d2_minimizing_one_window_pauses_all_docking_until_full_resume ... ok
+test engine::tests::focus_failure_retains_previous_selection ... ok
+test engine::tests::fullscreen_never_gets_silently_restored_or_switched ... ok
+test engine::tests::inactive_tabs_follow_workspace_but_unselected_attachments_do_not ... ok
+test engine::tests::initially_minimized_target_is_restored_once_then_stays_open ... ok
+test engine::tests::manager_drag_uses_position_only_and_preserves_actual_size ... ok
+test engine::tests::moved_window_returns_after_mouse_release_and_keeps_ownership ... ok
+test engine::tests::permission_loss_pauses_and_keeps_attachments ... ok
+test engine::tests::previous_dialog_blocks_switch_before_any_window_changes ... ok
+test engine::tests::rediscovered_alias_cannot_attach_a_second_time ... ok
+test engine::tests::release_accepts_constrained_geometry_but_rollback_remains_strict ... ok
+test engine::tests::release_restores_original_state ... ok
+test engine::tests::released_window_is_not_docked_again_after_restoration_failure ... ok
+test engine::tests::resize_defers_manual_move_correction_to_the_observer ... ok
+test engine::tests::stale_switch_does_not_touch_windows ... ok
+test engine::tests::superseded_preparation_rolls_back_without_hiding_previous ... ok
+test engine::tests::switching_does_not_require_minimizing_previous_window ... ok
+test engine::tests::switching_duplicate_titles_focuses_exact_handle_without_minimizing ... ok
+test engine::tests::unchanged_window_needs_no_restore_writes ... ok
+test macos::tests::a1_confirmed_closure_survives_preflight_until_engine_acknowledgement ... ok
+test macos::tests::m2_ax_failures_preserve_codes_and_never_establish_closure ... ok
+test model::action_tests::disconnected_only_tab_can_be_released_without_activation ... ok
+test model::action_tests::explicitly_selected_disconnected_tab_wins_over_live_selection ... ok
+test model::action_tests::stale_selection_falls_back_to_an_existing_tab ... ok
+test model::review_tests::a2_actions_follow_live_activation_and_preserve_disconnected_target ... ok
+test model::review_tests::a2_attach_replace_failed_switch_and_direct_activation_indications ... ok
+test model::review_tests::a6_reordered_removed_empty_single_and_invalid_requests ... ok
+test model::tests::cocoa_conversion_handles_displays_above_and_left ... ok
+test model::tests::dock_badges_keep_counts_separate_from_unknown_status ... ok
+test native_ops::tests::a1_membership_ignores_cached_attributes_and_rebinds_only_unique_identity ... ok
+test native_ops::tests::a5_cancellation_during_enumeration_stops_before_next_request ... ok
+test native_ops::tests::a5_every_request_prepares_its_object_before_reading ... ok
+test native_ops::tests::d3_clamped_frame_is_accepted_after_two_stable_intervals ... ok
+test native_ops::tests::d3_delayed_geometry_must_not_succeed_on_first_unchanged_poll ... ok
+test native_ops::tests::d3_oscillation_reports_unsettled_geometry ... ok
+test native_ops::tests::d3_restoration_can_retry_after_unsettled_geometry ... ok
+test native_ops::tests::d4_editing_between_native_operations_and_during_polling_stops_focus ... ok
+test schedule::tests::d1_initial_boundaries_delays_and_pointer_resumption ... ok
+test worker::tests::a3_old_geometry_acknowledgement_cannot_erase_concurrent_request ... ok
+test worker::tests::a5_discovery_coalesces_and_priority_interrupts_current_call ... ok
+test worker::tests::a6_bursts_mixed_directions_wraparound_and_stale_acknowledgements ... ok
+test worker::tests::editing_barrier_cancels_pending_focus_and_precedes_geometry ... ok
+test worker::tests::release_discards_stale_movement_switch_and_raise ... ok
+test worker::tests::newest_geometry_is_delivered_ahead_of_background_work ... ok
+test worker::tests::waiting_worker_is_notified_by_a_new_command ... ok
+test persistence::tests::unknown_version_is_not_overwritten ... ok
+test persistence::tests::labels_order_and_shortcuts_round_trip ... ok
+test worker::tests::a3_resize_release_multiple_releases_pause_resume_and_quit_save_latest ... ok
+test persistence::tests::fresh_launch_clears_even_reconnectable_tabs_and_preserves_preferences ... ok
+
+test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

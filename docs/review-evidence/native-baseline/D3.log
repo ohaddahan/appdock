@@ -1,0 +1,2 @@
+review case=D3 accessibility=true
+D3 before=Rect { x: 140.0, y: 728.0, width: 800.0, height: 532.0 } request=Rect { x: 250.0, y: 728.0, width: 890.0, height: 532.0 } returned=Rect { x: 250.0, y: 728.0, width: 890.0, height: 532.0 } elapsed_ms=46 final=Rect { x: 250.0, y: 728.0, width: 890.0, height: 532.0 }

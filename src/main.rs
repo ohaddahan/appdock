@@ -5,12 +5,15 @@ mod backdrop;
 #[cfg(target_os = "macos")]
 mod diagnostic;
 mod engine;
+mod error;
 #[cfg(target_os = "macos")]
 mod macos;
 mod model;
+mod native_ops;
 mod persistence;
 #[cfg(target_os = "macos")]
 mod picker;
+mod schedule;
 #[cfg(target_os = "macos")]
 mod ui;
 #[cfg(target_os = "macos")]
@@ -21,6 +24,25 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         let arg = std::env::args().nth(1);
+        if matches!(
+            arg.as_deref(),
+            Some("--review-fixture" | "--review-targets")
+        ) {
+            let result = if arg.as_deref() == Some("--review-targets") {
+                ui::fixtures::review_targets()
+            } else {
+                ui::fixtures::review(&std::env::args().nth(2).unwrap_or_default())
+            };
+            if let Err(e) = result {
+                eprintln!("{e}");
+                std::process::exit(if e.kind == model::ErrorKind::Permission {
+                    2
+                } else {
+                    1
+                });
+            }
+            return;
+        }
         if matches!(
             arg.as_deref(),
             Some(

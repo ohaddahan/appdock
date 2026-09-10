@@ -110,3 +110,9 @@ See the [inline window-picker preview](docs/screenshots/inline-window-picker.png
 `--pointer-smoke` uses two disposable app windows and macOS mouse-down target queries to verify that app-area clicks go to the app and tab-strip clicks go to AppDock, including after manager movement/resizing. It does not inject clicks into existing applications.
 
 `--diagnose-badges` reads Dock badge metadata for the supported diagnostic app names without reading messages or modifying applications. See the [tab badge preview](docs/screenshots/tab-notification-badges.png), using dummy count/dot values.
+
+### Review regression fixtures
+
+`python3 scripts/review-native.py --output /tmp/appdock-review-results` runs the review cases and affected existing fixtures serially using disposable child windows and fresh temporary workspaces. Build with `cargo build --all-features --locked` first. Select cases with `--cases A1,A3,A4,D3,D6`, or use `--review-fixture A3` directly with a fresh `APPDOCK_DATA_DIR` containing no `workspace.json`.
+
+Accessibility must be available to the launched binary; a missing prerequisite is reported as a failure. The runner records case outcomes, durations, exit codes, logs, and host details and cleans up its own processes. See [the review tracker](docs/REVIEW-TRACKER.md) for regressions and validation limits. Hosted `macos-15` CI runs deterministic checks, including Rust 1.95 compatibility; native fixtures remain local.
