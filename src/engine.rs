@@ -1118,6 +1118,8 @@ pub(crate) mod tests {
         assert!(e.paused.is_some());
         let before = e.backend.states.clone();
         e.follow_workspace(Rect { x: 999., ..e.area }).unwrap();
+        let error = e.switch(1).unwrap_err();
+        assert!(error.to_string().contains("Select Resume"));
         assert_eq!(e.backend.states, before);
         e.resume().unwrap();
         assert!(
@@ -1252,6 +1254,11 @@ pub(crate) mod tests {
         assert!(e.live[&1].docked);
         assert!(!e.live[&2].docked);
         assert!(e.backend.states[&2].minimized);
+        // An initially minimized, untouched startup tab must not trigger the
+        // global pause reserved for changes to previously docked windows.
+        e.backend.events.push(BackendEvent::Changed(2));
+        e.observe();
+        assert!(e.paused.is_none());
         e.switch(2).unwrap();
         assert_eq!(e.backend.minimize_calls, vec![(1, false), (2, false)]);
         assert!(e.live.values().all(|a| a.original.minimized));

@@ -1,0 +1,11 @@
+Read-only Spotify observation; no window actions or title reads.
+Before: AXWindows returned zero entries; AXChildren included a window.
+Spotify: AXWindows count=1
+Spotify AXChildren count=2 error=0
+child role=AXWindow
+child role=AXMenuBar
+
+Production backend after change:
+Accessibility trusted: true
+Spotify pid=66675: 1 candidate windows, 1 eligible
+window 1: minimized=false eligible=true lifecycle=Ok(())

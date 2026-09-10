@@ -69,9 +69,11 @@ fn main() {
             }
         } else if matches!(
             arg.as_deref(),
-            Some("--diagnose" | "--smoke" | "--diagnose-badges")
+            Some("--diagnose" | "--smoke" | "--diagnose-badges" | "--diagnose-windows")
         ) {
-            let result = if arg.as_deref() == Some("--diagnose-badges") {
+            let result = if arg.as_deref() == Some("--diagnose-windows") {
+                diagnostic::windows()
+            } else if arg.as_deref() == Some("--diagnose-badges") {
                 diagnostic::badges()
             } else {
                 diagnostic::run(arg.as_deref() == Some("--smoke"))

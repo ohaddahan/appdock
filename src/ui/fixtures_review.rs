@@ -63,6 +63,7 @@ pub(crate) fn run(case: &str) -> Result<()> {
             "D6",
             "Minimized",
             "Startup",
+            "StartupMany",
             "Animations",
             "RestoreReady",
         ]
@@ -144,6 +145,9 @@ fn backend_case(case: &str, pid: i32, dir: &Path) -> Result<()> {
     )?;
     if case == "Animations" {
         return animation_case(backend, &targets);
+    }
+    if case == "StartupMany" {
+        return startup_many_case(pid, backend, &targets);
     }
     if case == "RestoreReady" {
         let window = targets[0].id;
@@ -598,6 +602,84 @@ fn animation_case(mut backend: MacBackend, targets: &[WindowInfo]) -> Result<()>
     );
     println!(
         "All tabs registered; only selected startup window restored; keep-open close preserved all visible windows and their original geometry"
+    );
+    Ok(())
+}
+
+fn startup_many_case(pid: i32, mut backend: MacBackend, targets: &[WindowInfo]) -> Result<()> {
+    for target in targets {
+        backend.minimize(target.id, true)?;
+    }
+    let area = Rect {
+        x: 380.,
+        y: 220.,
+        width: 1100.,
+        height: 720.,
+    };
+    let saved = Workspace {
+        geometry: area,
+        startup_apps: vec![StartupApp {
+            bundle: "dev.appdock.review".into(),
+            name: "Review fixture".into(),
+        }],
+        ..Workspace::default()
+    };
+    persistence::save(&persistence::path(), &saved)?;
+    let client = worker::start(persistence::load_for_launch(&persistence::path())?);
+    client.send(Command::Resize(area, area));
+    client.send(Command::Apps(vec![App {
+        pid,
+        name: "Review fixture".into(),
+        bundle: "dev.appdock.review".into(),
+    }]));
+    client.send(Command::Discover);
+    let snapshot = wait_snapshot(&client, |s| {
+        s.live.len() == targets.len() && s.selected.is_some()
+    })?;
+    let count_minimized = || -> Result<usize> {
+        targets.iter().try_fold(0, |count, target| {
+            Ok(count + usize::from(backend.state(target.id)?.minimized))
+        })
+    };
+    require(!snapshot.paused, "Startup unexpectedly paused docking")?;
+    require(
+        count_minimized()? == targets.len() - 1,
+        "Startup should restore only its first selected window",
+    )?;
+    let mut remaining = targets.len() - 1;
+    for (tab, _) in snapshot
+        .live
+        .iter()
+        .filter(|(tab, _)| Some(*tab) != snapshot.selected)
+    {
+        client.switch(*tab);
+        let selected = wait_snapshot(&client, |s| s.selected == Some(*tab))?;
+        remaining -= 1;
+        require(
+            !selected.paused,
+            "Selecting a minimized startup tab paused docking",
+        )?;
+        require(
+            count_minimized()? == remaining,
+            "Clicking a startup tab left its target minimized",
+        )?;
+        require(
+            selected.selected_frame.is_some(),
+            "Selected tab has no docked frame",
+        )?;
+    }
+    client.send(Command::Quit);
+    wait_snapshot(&client, |s| s.stopped)?;
+    require(
+        count_minimized()? == 0,
+        "Close sent restored windows back to the Dock",
+    )?;
+    require(
+        persistence::load(&persistence::path())?.startup_apps.len() == 1,
+        "Close lost the configured app",
+    )?;
+    println!(
+        "Three minimized windows from one configured app became tabs; selecting each restored it through the worker; closing left all three open"
     );
     Ok(())
 }

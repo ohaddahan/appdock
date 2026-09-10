@@ -1,0 +1,18 @@
+review case=Minimized accessibility=true
+AXWindows count=3
+role=Ok(Some("AXWindow")) subrole=Ok(Some("AXDialog")) minimized=Ok(true) state=Ok(WindowState { frame: Rect { x: 260.0, y: 405.0, width: 800.0, height: 532.0 }, minimized: true, fullscreen: false, modal: false })
+AXPosition settable=Ok(true)
+AXSize settable=Ok(true)
+AXMinimized settable=Ok(true)
+AXMain settable=Ok(false)
+role=Ok(Some("AXWindow")) subrole=Ok(Some("AXDialog")) minimized=Ok(true) state=Ok(WindowState { frame: Rect { x: 200.0, y: 405.0, width: 800.0, height: 532.0 }, minimized: true, fullscreen: false, modal: false })
+AXPosition settable=Ok(true)
+AXSize settable=Ok(true)
+AXMinimized settable=Ok(true)
+AXMain settable=Ok(false)
+role=Ok(Some("AXWindow")) subrole=Ok(Some("AXDialog")) minimized=Ok(true) state=Ok(WindowState { frame: Rect { x: 140.0, y: 405.0, width: 800.0, height: 532.0 }, minimized: true, fullscreen: false, modal: false })
+AXPosition settable=Ok(true)
+AXSize settable=Ok(true)
+AXMinimized settable=Ok(true)
+AXMain settable=Ok(false)
+Minimized discovery: 3 windows, 3 eligible

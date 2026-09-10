@@ -179,23 +179,45 @@ impl Ax<'_> {
         })?;
         Ok(b != 0)
     }
-    fn array(&self, e: &AXUIElement, name: &str) -> Result<Vec<CFRetained<AXUIElement>>> {
-        let a = self
-            .attr(e, name)?
-            .downcast::<CFArray>()
-            .map_err(|_| "Not an AX array")?;
-        // CFArray is untyped; each member is checked before treating it as an AX element.
-        let a = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(a) };
-        a.iter()
-            .map(|v| {
-                v.downcast::<AXUIElement>().map_err(|_| {
-                    BackendError::new(
-                        ErrorKind::Communication,
-                        "Invalid member in AX window array",
-                    )
+    fn array_value(value: CFRetained<CFType>) -> Result<Vec<CFRetained<AXUIElement>>> {
+        let array = value.downcast::<CFArray>().map_err(|_| "Not an AX array")?;
+        let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
+        array
+            .iter()
+            .map(|value| {
+                value.downcast::<AXUIElement>().map_err(|_| {
+                    BackendError::new(ErrorKind::Communication, "Invalid AX array member")
                 })
             })
             .collect()
+    }
+    fn optional_array(
+        &self,
+        element: &AXUIElement,
+        name: &str,
+    ) -> Result<Option<Vec<CFRetained<AXUIElement>>>> {
+        self.optional_attr(element, name)?
+            .map(Self::array_value)
+            .transpose()
+    }
+    fn array(&self, element: &AXUIElement, name: &str) -> Result<Vec<CFRetained<AXUIElement>>> {
+        self.optional_array(element, name)?
+            .ok_or_else(|| format!("Missing {name}").into())
+    }
+    fn windows(&self, root: &AXUIElement) -> Result<Vec<CFRetained<AXUIElement>>> {
+        let windows = self.optional_array(root, "AXWindows")?;
+        let children = self.optional_array(root, "AXChildren")?;
+        crate::native_ops::merge_window_sources(
+            windows,
+            children,
+            |child| {
+                let role = self.string(child, "AXRole")?.ok_or_else(|| {
+                    BackendError::new(ErrorKind::Communication, "Application child has no AXRole")
+                })?;
+                Ok(role == "AXWindow")
+            },
+            |a, b| **a == **b,
+        )
     }
 }
 /// Read badge metadata exposed by the Dock, matching exact application paths.
@@ -370,7 +392,7 @@ impl MacBackend {
         for app in &self.apps {
             ax.checkpoint()?;
             let root = unsafe { AXUIElement::new_application(app.pid) };
-            let Some(windows) = crate::native_ops::optional(ax.array(&root, "AXWindows"))? else {
+            let Some(windows) = crate::native_ops::optional(ax.windows(&root))? else {
                 continue;
             };
             for element in windows {
@@ -649,7 +671,7 @@ impl MacBackend {
     ) -> Result<()> {
         let e = self.entry(id)?;
         // App-list snapshots may lag. Only the OS process probe or successful
-        // AXWindows membership enumeration can confirm closure.
+        // combined AX window-list membership can confirm closure.
         unsafe extern "C" {
             fn kill(pid: i32, signal: i32) -> i32;
             fn __error() -> *mut i32;
@@ -667,7 +689,7 @@ impl MacBackend {
             }
             let windows = app_windows
                 .entry(e.info.pid)
-                .or_insert_with(|| AX.array(&e.app, "AXWindows"))
+                .or_insert_with(|| AX.windows(&e.app))
                 .as_ref()
                 .map_err(Clone::clone)?;
             let exact = windows.iter().position(|w| **w == *e.element);

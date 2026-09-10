@@ -1,0 +1,2 @@
+review case=StartupMany accessibility=true
+Three minimized windows from one configured app became tabs; selecting each restored it through the worker; closing left all three open

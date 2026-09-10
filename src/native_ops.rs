@@ -143,6 +143,30 @@ pub fn wait_for_window_ready(
     }
 }
 
+/// Some providers omit a window from AXWindows while retaining it in AXChildren.
+/// Both successful lists participate in membership; missing/erroring sources must
+/// not turn an incomplete read into proof that a window closed.
+pub fn merge_window_sources<T>(
+    windows: Option<Vec<T>>,
+    children: Option<Vec<T>>,
+    mut is_window: impl FnMut(&T) -> Result<bool>,
+    same: impl Fn(&T, &T) -> bool,
+) -> Result<Vec<T>> {
+    if windows.is_none() && children.is_none() {
+        return Err(BackendError::new(
+            ErrorKind::Communication,
+            "Application exposes no supported window list",
+        ));
+    }
+    let mut result = windows.unwrap_or_default();
+    for child in children.unwrap_or_default() {
+        if !result.iter().any(|known| same(known, &child)) && is_window(&child)? {
+            result.push(child);
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +379,43 @@ mod tests {
         assert_eq!(
             wait_for_window_ready(|| true, || Err(denied.clone()), || false, || {}).unwrap_err(),
             denied
+        );
+    }
+    #[test]
+    fn window_present_only_in_children_is_discovered_without_duplicate_handles() {
+        assert_eq!(
+            merge_window_sources(
+                Some(vec![]),
+                Some(vec![1, 2]),
+                |id| Ok(*id == 1),
+                |a, b| a == b
+            )
+            .unwrap(),
+            vec![1]
+        );
+        assert_eq!(
+            merge_window_sources(Some(vec![1]), Some(vec![1, 2]), |_| Ok(true), |a, b| a == b)
+                .unwrap(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            merge_window_sources(None, Some(vec![1]), |_| Ok(true), |a, b| a == b).unwrap(),
+            vec![1]
+        );
+    }
+    #[test]
+    fn missing_lists_or_failed_child_classification_cannot_confirm_closure() {
+        assert!(merge_window_sources::<u64>(None, None, |_| Ok(true), |a, b| a == b).is_err());
+        let error = BackendError::new(ErrorKind::Communication, "AXRole timeout");
+        assert_eq!(
+            merge_window_sources(
+                Some(vec![]),
+                Some(vec![1]),
+                |_| Err(error.clone()),
+                |a, b| a == b
+            )
+            .unwrap_err(),
+            error
         );
     }
 }

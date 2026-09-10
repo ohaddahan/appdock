@@ -1,0 +1,51 @@
+{
+  "started_utc": "2026-09-10T18:25:31.409438+00:00",
+  "environment": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "baseline_commit": "f876eb204d4c193853fb26b27882079ff3613ecd",
+    "binary": "/Users/ohaddahan/RustroverProjects/appdock/target/debug/appdock",
+    "binary_sha256": "acdf5a488d9b045eb052108bc670c3385300d1c221d92452bcc5280c9f1f2687"
+  },
+  "cases": [
+    {
+      "id": "prerequisite",
+      "outcome": "prerequisite failure",
+      "exit_code": 2,
+      "duration_seconds": 0.39,
+      "log": "prerequisite.log"
+    },
+    {
+      "id": "StartupMany",
+      "outcome": "prerequisite failure",
+      "reason": "Accessibility prerequisite failed; case not run"
+    },
+    {
+      "id": "Startup",
+      "outcome": "prerequisite failure",
+      "reason": "Accessibility prerequisite failed; case not run"
+    },
+    {
+      "id": "Minimized",
+      "outcome": "prerequisite failure",
+      "reason": "Accessibility prerequisite failed; case not run"
+    },
+    {
+      "id": "RestoreReady",
+      "outcome": "prerequisite failure",
+      "reason": "Accessibility prerequisite failed; case not run"
+    },
+    {
+      "id": "Animations",
+      "outcome": "prerequisite failure",
+      "reason": "Accessibility prerequisite failed; case not run"
+    },
+    {
+      "id": "A4",
+      "outcome": "prerequisite failure",
+      "reason": "Accessibility prerequisite failed; case not run"
+    }
+  ]
+}

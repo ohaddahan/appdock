@@ -30,24 +30,23 @@ impl Startup {
     pub fn resolve(&mut self, windows: &[WindowInfo], occupied: &[WindowId]) {
         let Some(apps) = self.apps.take() else { return };
         for app in apps {
-            let matching: Vec<_> = windows
+            let mut unavailable = false;
+            for window in windows
                 .iter()
                 .filter(|w| w.identity.bundle == app.bundle)
-                .collect();
-            if matching.iter().any(|w| occupied.contains(&w.id)) {
-                continue;
+                .filter(|w| !occupied.contains(&w.id))
+            {
+                if !window.eligible {
+                    unavailable = true;
+                } else if !self.pending.contains(&window.id) {
+                    self.pending.push_back(window.id);
+                }
             }
-            match matching.as_slice() {
-                [] => {} // An app not running at startup is left for the user to open.
-                [window] if window.eligible => self.pending.push_back(window.id),
-                [_] => self.notes.push(format!(
-                    "{} is not ready for docking. Use Add App when its window is available.",
+            if unavailable {
+                self.notes.push(format!(
+                    "Some {} windows are not ready for docking. Use Add App when they are available.",
                     app.name
-                )),
-                _ => self.notes.push(format!(
-                    "{} has several windows. Choose one with Add App.",
-                    app.name
-                )),
+                ));
             }
         }
     }
@@ -96,24 +95,38 @@ mod tests {
         assert_eq!(state.next(), None);
     }
     #[test]
-    fn startup_ambiguous_ineligible_and_already_attached_apps_are_not_guessed() {
+    fn startup_adds_all_eligible_windows_including_minimized_and_skips_only_occupied() {
         let mut state = Startup::new(vec![rule("many"), rule("blocked"), rule("attached")]);
         state.resolve(
             &[
                 window(1, "many"),
-                window(2, "many"),
+                WindowInfo {
+                    minimized: true,
+                    ..window(2, "many")
+                },
                 WindowInfo {
                     eligible: false,
                     ..window(3, "blocked")
                 },
                 window(4, "attached"),
+                window(5, "attached"),
+                window(5, "attached"),
+                WindowInfo {
+                    eligible: false,
+                    ..window(6, "many")
+                },
             ],
             &[4],
         );
+        assert_eq!(state.next(), Some(1));
+        assert_eq!(state.next(), Some(2));
+        assert_eq!(state.next(), Some(5));
         assert!(!state.has_pending());
         let notice = state.notice().unwrap();
-        assert!(notice.contains("several windows"));
         assert!(notice.contains("not ready"));
+        assert!(notice.contains("many"));
+        assert!(notice.contains("blocked"));
+        assert!(!notice.contains("attached"));
         assert!(state.notice().is_none());
     }
     #[test]

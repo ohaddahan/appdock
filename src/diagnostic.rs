@@ -52,6 +52,71 @@ pub fn badges() -> Result<()> {
     .join()
     .map_err(|_| "Badge diagnostic panicked".to_string())?
 }
+/// Read-only candidate diagnostics. Omit window titles and message contents.
+pub fn windows() -> Result<()> {
+    let _ = MainThreadMarker::new().ok_or("Main thread required")?;
+    let requested: Vec<_> = std::env::args()
+        .skip(2)
+        .map(|name| name.to_lowercase())
+        .collect();
+    if requested.is_empty() {
+        return Err("Usage: --diagnose-windows <app name or bundle> [...]".into());
+    }
+    let apps: Vec<_> = NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .filter(|app| app.activationPolicy() == NSApplicationActivationPolicy::Regular)
+        .filter_map(|app| {
+            let name = app.localizedName()?.to_string();
+            let bundle = app
+                .bundleIdentifier()
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            requested
+                .iter()
+                .any(|value| *value == name.to_lowercase() || *value == bundle.to_lowercase())
+                .then_some(App {
+                    pid: app.processIdentifier(),
+                    name,
+                    bundle,
+                })
+        })
+        .collect();
+    std::thread::spawn(move || -> Result<()> {
+        let mut backend = MacBackend::new();
+        println!("Accessibility trusted: {}", backend.trusted());
+        if !backend.trusted() {
+            return Err(BackendError::new(
+                ErrorKind::Permission,
+                "Accessibility unavailable",
+            ));
+        }
+        for app in apps {
+            let name = app.name.clone();
+            let pid = app.pid;
+            backend.update_apps(vec![app]);
+            let windows = backend.discover()?;
+            println!(
+                "{name} pid={pid}: {} candidate windows, {} eligible",
+                windows.len(),
+                windows.iter().filter(|w| w.eligible).count()
+            );
+            for window in windows {
+                println!(
+                    "window {}: minimized={} eligible={} lifecycle={:?}",
+                    window.id,
+                    window.minimized,
+                    window.eligible,
+                    backend.check_window(window.id)
+                );
+            }
+        }
+        Ok(())
+    })
+    .join()
+    .map_err(|_| "Window diagnostics panicked")?
+}
+
 pub fn run(smoke: bool) -> Result<()> {
     let m = MainThreadMarker::new().ok_or("Main thread required")?;
     let _ = NSApplication::sharedApplication(m);
