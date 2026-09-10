@@ -35,6 +35,15 @@ pub fn load(path: &Path) -> Result<Workspace> {
     }
     Ok(workspace)
 }
+/// Each launch is a new attachment session. Retain preferences, never live tabs.
+pub fn load_for_launch(path: &Path) -> Result<Workspace> {
+    let mut workspace = load(path)?;
+    if !workspace.tabs.is_empty() {
+        workspace.tabs.clear();
+        save(path, &workspace)?;
+    }
+    Ok(workspace)
+}
 pub fn save(path: &Path, workspace: &Workspace) -> Result<()> {
     let parent = path.parent().ok_or("Missing parent directory")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -55,6 +64,7 @@ mod tests {
         let p = std::env::temp_dir().join(format!("appdock-version-{}.json", std::process::id()));
         fs::write(&p, b"{\"version\":999}").unwrap();
         assert!(load(&p).is_err());
+        assert!(load_for_launch(&p).is_err());
         assert_eq!(fs::read(&p).unwrap(), b"{\"version\":999}");
         fs::remove_file(p).unwrap();
     }
@@ -86,6 +96,30 @@ mod tests {
         let r = load(&p).unwrap();
         assert_eq!(r.tabs.iter().map(|t| t.id).collect::<Vec<_>>(), vec![7, 2]);
         assert_eq!(r.tabs[0].name, w.tabs[0].name);
+        fs::remove_file(p).unwrap();
+    }
+    #[test]
+    fn fresh_launch_clears_even_reconnectable_tabs_and_preserves_preferences() {
+        let p =
+            std::env::temp_dir().join(format!("appdock-fresh-launch-{}.json", std::process::id()));
+        let mut saved = Workspace::default();
+        saved.geometry.x = 460.;
+        saved.next_shortcut = "Control+Super+ArrowRight".into();
+        saved.tabs.push(SavedTab {
+            id: 3,
+            name: "Terminal".into(),
+            identity: Identity {
+                bundle: "com.apple.Terminal".into(),
+                identifier: Some("stable-window".into()),
+            },
+        });
+        save(&p, &saved).unwrap();
+        let fresh = load_for_launch(&p).unwrap();
+        assert!(fresh.tabs.is_empty());
+        assert_eq!(fresh.geometry, saved.geometry);
+        assert_eq!(fresh.next_shortcut, saved.next_shortcut);
+        assert!(load(&p).unwrap().tabs.is_empty());
+        assert!(load_for_launch(&p).unwrap().tabs.is_empty());
         fs::remove_file(p).unwrap();
     }
 }

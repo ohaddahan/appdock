@@ -15,23 +15,33 @@ use objc2::{
 };
 use objc2_app_kit::*;
 use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
-    NSString, NSTimer,
+    MainThreadMarker, NSAttributedString, NSDictionary, NSNotification, NSObject, NSObjectProtocol,
+    NSPoint, NSRect, NSSize, NSString, NSTimer,
 };
 use std::{
     cell::{Cell, OnceCell, RefCell},
     str::FromStr,
 };
-const CHROME: f64 = 64.;
-const TAB_WIDTH: f64 = 220.;
+const CHROME: f64 = 36.;
+const STATUS_CHROME: f64 = 64.;
+const FRAME: f64 = 8.;
+const TAB_WIDTH: f64 = 160.;
 fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
 }
 // Keep the app area transparent while attached: activating the tab strip must
 // never paint an opaque rectangle over the external application's window.
-#[derive(Default)]
 struct SurfaceIvars {
     attached: Cell<bool>,
+    chrome: Cell<f64>,
+}
+impl Default for SurfaceIvars {
+    fn default() -> Self {
+        Self {
+            attached: Cell::new(false),
+            chrome: Cell::new(CHROME),
+        }
+    }
 }
 define_class!(
     #[unsafe(super=NSView)]
@@ -46,12 +56,18 @@ define_class!(
             NSColor::clearColor().setFill();
             NSRectFillUsingOperation(bounds, NSCompositingOperation::Copy);
             theme::color(theme::SURFACE).setFill();
+            let chrome=self.ivars().chrome.get();
             let painted=if self.ivars().attached.get() {
-                rect(0., (bounds.size.height-CHROME).max(0.), bounds.size.width, CHROME.min(bounds.size.height))
+                rect(0., (bounds.size.height-chrome).max(0.), bounds.size.width, chrome.min(bounds.size.height))
             } else { bounds };
             NSRectFill(painted);
+            if self.ivars().attached.get() {
+                theme::color(theme::WINDOW).setFill();
+                let body=(bounds.size.height-chrome).max(0.);
+                for edge in [rect(0.,0.,FRAME,body),rect(bounds.size.width-FRAME,0.,FRAME,body),rect(0.,0.,bounds.size.width,FRAME),rect(0.,body-FRAME,bounds.size.width,FRAME)] { NSRectFill(edge); }
+            }
             theme::color(theme::BORDER).setFill();
-            NSRectFill(rect(0.,(bounds.size.height-CHROME).max(0.),bounds.size.width,1.));
+            NSRectFill(rect(0.,(bounds.size.height-chrome).max(0.),bounds.size.width,1.));
         }
     }
 );
@@ -66,10 +82,21 @@ impl WorkspaceSurface {
             self.setNeedsDisplay(true);
         }
     }
+    fn chrome(&self) -> f64 {
+        self.ivars().chrome.get()
+    }
+    fn set_chrome(&self, chrome: f64) -> bool {
+        let changed = self.ivars().chrome.replace(chrome) != chrome;
+        if changed {
+            self.setNeedsDisplay(true);
+        }
+        changed
+    }
 }
 #[derive(Default)]
 struct TabIvars {
     active: Cell<bool>,
+    badge: Option<String>,
 }
 define_class!(
     #[unsafe(super=NSButton)]
@@ -82,7 +109,23 @@ define_class!(
         fn draw(&self,dirty:NSRect){
             theme::color(if self.ivars().active.get(){theme::WINDOW}else if self.isHighlighted(){theme::HOVER}else{theme::SURFACE}).setFill();
             NSRectFill(self.bounds());
-            unsafe {let _:()=msg_send![super(self),drawRect:dirty];}
+            if let Some(badge)=&self.ivars().badge {
+                let bounds=self.bounds();
+                let dot=badge=="•";
+                let width=if dot{8.}else{(badge.len() as f64*7.+10.).max(20.)};
+                if let Some(cell)=self.cell(){cell.drawWithFrame_inView(rect(0.,0.,bounds.size.width-width-10.,bounds.size.height),self);}
+                let height=if dot{8.}else{18.};
+                let badge_rect=rect(bounds.size.width-width-4.,(bounds.size.height-height)/2.,width,height);
+                theme::color(0xC34A55).setFill();
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(badge_rect,height/2.,height/2.).fill();
+                if !dot {
+                    let color=NSColor::whiteColor();let font=theme::font(11.);
+                    let attributes=NSDictionary::from_slices(&[unsafe{NSForegroundColorAttributeName},unsafe{NSFontAttributeName}],&[&*color as &AnyObject,&*font as &AnyObject]);
+                    let label=unsafe{NSAttributedString::new_with_attributes(&NSString::from_str(badge),&attributes)};
+                    let size=label.size();
+                    label.drawAtPoint(NSPoint::new(badge_rect.origin.x+(width-size.width)/2.,(bounds.size.height-size.height)/2.));
+                }
+            } else {unsafe {let _:()=msg_send![super(self),drawRect:dirty];}}
             if self.ivars().active.get(){theme::color(theme::SECONDARY).setFill();NSRectFill(rect(0.,if self.isFlipped(){self.bounds().size.height-2.}else{0.},self.bounds().size.width,2.));}
         }
         #[unsafe(method(mouseDown:))]
@@ -94,10 +137,52 @@ define_class!(
     }
 );
 impl TabButton {
-    fn new(m: MainThreadMarker, frame: NSRect, active: bool) -> Retained<Self> {
+    fn new(
+        m: MainThreadMarker,
+        frame: NSRect,
+        active: bool,
+        badge: Option<String>,
+    ) -> Retained<Self> {
         unsafe {
-            msg_send![super(Self::alloc(m).set_ivars(TabIvars{active:Cell::new(active)})),initWithFrame:frame]
+            msg_send![super(Self::alloc(m).set_ivars(TabIvars{active:Cell::new(active),badge})),initWithFrame:frame]
         }
+    }
+}
+fn select_all_key(event: &NSEvent) -> bool {
+    let modifiers = event.modifierFlags()
+        & (NSEventModifierFlags::Control
+            | NSEventModifierFlags::Command
+            | NSEventModifierFlags::Option);
+    (modifiers == NSEventModifierFlags::Control || modifiers == NSEventModifierFlags::Command)
+        && event
+            .charactersIgnoringModifiers()
+            .is_some_and(|s| s.to_string().eq_ignore_ascii_case("a"))
+}
+define_class!(
+    #[unsafe(super=NSTextView)]
+    #[thread_kind=MainThreadOnly]
+    struct RenameFieldEditor;
+    unsafe impl NSObjectProtocol for RenameFieldEditor {}
+    impl RenameFieldEditor {
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self,event:&NSEvent) {
+            if select_all_key(event) { unsafe { let _:()=msg_send![self,selectAll:Option::<&AnyObject>::None]; } }
+            else { unsafe { let _:()=msg_send![super(self),keyDown:event]; } }
+        }
+        #[unsafe(method(performKeyEquivalent:))]
+        fn key_equivalent(&self,event:&NSEvent)->bool {
+            if select_all_key(event) { unsafe { let _:()=msg_send![self,selectAll:Option::<&AnyObject>::None]; } true }
+            else { unsafe { msg_send![super(self),performKeyEquivalent:event] } }
+        }
+    }
+);
+impl RenameFieldEditor {
+    fn new(m: MainThreadMarker) -> Retained<Self> {
+        let editor: Retained<Self> = unsafe {
+            msg_send![super(Self::alloc(m).set_ivars(())),initWithFrame:rect(0.,0.,100.,26.)]
+        };
+        editor.setFieldEditor(true);
+        editor
     }
 }
 struct RenameEditor {
@@ -114,10 +199,15 @@ struct Ivars {
     tracking_samples: Cell<u64>,
     drag_timer: OnceCell<Retained<NSTimer>>,
     tracking_test: Cell<bool>,
+    backdrop: OnceCell<crate::backdrop::Backdrop>,
+    rename_field: Cell<Option<std::ptr::NonNull<AnyObject>>>,
+    rename_text_view: OnceCell<Retained<RenameFieldEditor>>,
+    rename_blur_requested: Cell<bool>,
 }
 struct Ui {
     client: Client,
     window: Retained<NSWindow>,
+    backdrop: crate::backdrop::Backdrop,
     tabs: Retained<NSView>,
     surface: Retained<WorkspaceSurface>,
     hint: Retained<NSTextField>,
@@ -126,10 +216,9 @@ struct Ui {
     resume_button: Retained<NSButton>,
     replace_button: Retained<NSButton>,
     rename_editor: Option<RenameEditor>,
-    picker: Retained<NSPanel>,
-    search: Retained<NSSearchField>,
-    choices: Retained<NSPopUpButton>,
-    choice_ids: Vec<WindowId>,
+    picker: crate::picker::InlinePicker,
+    picker_open: bool,
+    pending_picker: bool,
     replacement: Option<TabId>,
     editing: Option<TabId>,
     tab_signature: String,
@@ -139,10 +228,24 @@ struct Ui {
     shortcut_error: Option<String>,
     last_close_attempt: u64,
     last_frame: Option<Rect>,
+    last_area: Option<Rect>,
+    editing_focus_pending: Option<u64>,
+    pending_rename: Option<TabId>,
     raise_after: Option<std::time::Instant>,
     dock_test_stage: usize,
     dock_test_tick: u64,
     smoke_failed: bool,
+    fixture_child: Option<std::process::Child>,
+    fixture_rename_started: bool,
+    fixture_rename_tested: bool,
+    fixture_attach_pending: Option<WindowId>,
+    fixture_attach_after: u64,
+    fixture_picker_cancel_tested: bool,
+    last_direct_window: Option<u32>,
+    fixture_reveal_started: bool,
+    fixture_reveal_tested: bool,
+    fixture_reveal_ordered: bool,
+    fixture_keyboard_ready: bool,
 }
 define_class!(
     #[unsafe(super=NSObject)] #[thread_kind=MainThreadOnly] #[ivars=Ivars] struct Delegate;
@@ -154,11 +257,20 @@ define_class!(
         }
     }
     unsafe impl NSWindowDelegate for Delegate {
+        #[unsafe(method_id(windowWillReturnFieldEditor:toObject:))]
+        fn field_editor(&self,_:&NSWindow,client:Option<&AnyObject>)->Option<Retained<AnyObject>> {
+            // AppKit asks for field editors during calls made with the UI borrowed.
+            // Route only this control through independent state, never the RefCell.
+            self.ivars().rename_text_view.get()
+                .filter(|_|client.is_some_and(|c|Some(std::ptr::NonNull::from(c))==self.ivars().rename_field.get()))
+                .map(|editor|unsafe { Retained::cast_unchecked(editor.clone()) })
+        }
         #[unsafe(method(windowShouldClose:))] fn close(&self,sender:&NSWindow)->bool {if self.ivars().ui.borrow().as_ref().is_some_and(|u|std::ptr::eq(&*u.window,sender)){self.close_request();false}else{true}}
         #[unsafe(method(windowWillMove:))] fn will_move(&self,_:&NSNotification){self.start_tracking();}
         #[unsafe(method(windowDidMove:))] fn moved(&self,_:&NSNotification){self.geometry();}
         #[unsafe(method(windowDidResize:))] fn resized(&self,_:&NSNotification){self.geometry();}
-        #[unsafe(method(windowDidBecomeKey:))] fn key(&self,_:&NSNotification){self.ivars().raise_requested.set(true);}
+        #[unsafe(method(windowDidBecomeKey:))] fn key(&self,_:&NSNotification){self.ivars().raise_requested.set(true);if let Some(backdrop)=self.ivars().backdrop.get(){backdrop.keep_below_selected();}}
+        #[unsafe(method(windowDidResignKey:))] fn resigned_key(&self,_:&NSNotification){self.ivars().rename_blur_requested.set(true);}
     }
     unsafe impl NSTextFieldDelegate for Delegate {}
     unsafe impl NSSearchFieldDelegate for Delegate {}
@@ -169,7 +281,14 @@ define_class!(
         }
         #[unsafe(method(control:textView:doCommandBySelector:))]
         fn editing_command(&self,_:&NSControl,_:&NSTextView,command:objc2::runtime::Sel)->bool {
-            if !self.ivars().ui.borrow().as_ref().is_some_and(|u|u.rename_editor.is_some()){false}
+            let picker=self.ivars().ui.borrow().as_ref().is_some_and(|u|u.picker_open);
+            if picker {
+                if command==sel!(cancelOperation:){self.dismiss_picker(true);true}
+                else if command==sel!(insertNewline:){self.attach_selected_window();true}
+                else if command==sel!(moveDown:) || command==sel!(moveUp:){
+                    if let Some(u)=self.ivars().ui.borrow_mut().as_mut(){u.picker.move_selection(if command==sel!(moveDown:){1}else{-1});}true
+                } else {false}
+            } else if !self.ivars().ui.borrow().as_ref().is_some_and(|u|u.rename_editor.is_some()){false}
             else if command==sel!(cancelOperation:){self.finish_rename(false);true}else if command==sel!(insertNewline:){self.finish_rename(true);true}else{false}
         }
         #[unsafe(method(controlTextDidChange:))] fn text_changed(&self,_:&NSNotification){self.filter();}
@@ -177,11 +296,18 @@ define_class!(
     impl Delegate {
         #[unsafe(method(trackDrag:))] fn drag_timer(&self,_:&NSTimer){self.track_drag();}
         #[unsafe(method(tick:))] fn timer(&self,_:&NSTimer){self.tick();}
-        #[unsafe(method(selectTab:))] fn select_tab(&self,sender:&NSButton){let mut b=self.ivars().ui.borrow_mut();if let Some(u)=b.as_mut(){let id=sender.tag() as u64;u.editing=Some(id);u.client.switch(id);}}
+        #[unsafe(method(selectTab:))] fn select_tab(&self,sender:&NSButton){self.dismiss_picker(false);self.finish_rename(true);let mut b=self.ivars().ui.borrow_mut();if let Some(u)=b.as_mut(){let id=sender.tag() as u64;u.editing=Some(id);u.client.switch(id);}}
         #[unsafe(method(addWindow:))] fn add(&self,_:&AnyObject){self.show_picker(false);}
         #[unsafe(method(replaceWindow:))] fn replace(&self,_:&AnyObject){self.show_picker(true);}
         #[unsafe(method(refreshWindows:))] fn refresh(&self,_:&AnyObject){if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::Discover);}}
         #[unsafe(method(attachWindow:))] fn attach(&self,_:&AnyObject){self.attach_selected_window();}
+        #[unsafe(method(cancelPicker:))] fn cancel_picker(&self,_:&AnyObject){self.dismiss_picker(true);}
+        #[unsafe(method(selectPickerWindow:))] fn choose_window(&self,sender:&NSButton){if let Some(u)=self.ivars().ui.borrow_mut().as_mut(){u.picker.select_window(sender.tag() as u64);}}
+        #[unsafe(method(attachPickerWindow:))] fn attach_row(&self,sender:&NSButton){
+            let selected={let mut b=self.ivars().ui.borrow_mut();b.as_mut().is_some_and(|u|u.picker_open && u.picker.select_window(sender.tag() as u64))};
+            // Release the UI borrow before attachment dismisses the picker.
+            if selected{self.attach_selected_window();}
+        }
         #[unsafe(method(renameTabButton:))] fn rename_button(&self,sender:&NSButton){self.begin_rename(sender.tag() as u64);}
         #[unsafe(method(releaseTab:))] fn release(&self,_:&AnyObject){self.release_current();}
         #[unsafe(method(releaseThisTab:))] fn release_this(&self,sender:&NSButton){if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::Release(sender.tag() as u64));}}
@@ -222,7 +348,7 @@ impl Delegate {
         let m = self.mtm();
         theme::install_font();
         let app = NSApplication::sharedApplication(m);
-        let mut workspace = match persistence::load(&persistence::path()) {
+        let mut workspace = match persistence::load_for_launch(&persistence::path()) {
             Ok(w) => w,
             Err(e) => {
                 let a = NSAlert::new(m);
@@ -232,6 +358,20 @@ impl Delegate {
                 app.terminate(None);
                 return;
             }
+        };
+        let fixture_child = if std::env::args()
+            .any(|a| matches!(a.as_str(), "--frame-smoke" | "--pointer-smoke"))
+        {
+            workspace.geometry.width = 700.;
+            workspace.geometry.height = 400.;
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--overlay-targets")
+                .spawn()
+                .expect("Cannot start disposable frame targets");
+            println!("Disposable frame target process: {}", child.id());
+            Some(child)
+        } else {
+            None
         };
         if std::env::args().any(|a| {
             matches!(
@@ -291,6 +431,44 @@ impl Delegate {
             NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }).as_deref(),
         );
         window.setDelegate(Some(ProtocolObject::from_ref(self)));
+        let titlebar = NSTitlebarAccessoryViewController::new(m);
+        titlebar.setLayoutAttribute(NSLayoutAttribute::Left);
+        window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+        let title = NSTextField::labelWithString(&window.title(), m);
+        title.setFont(Some(&theme::font(13.)));
+        title.setTextColor(Some(&theme::color(theme::TEXT)));
+        title.sizeToFit();
+        let title_size = title.frame().size;
+        title.setFrameOrigin(NSPoint::new(8., (24. - title_size.height) / 2.));
+        let add_x = 8. + title_size.width + 12.;
+        let titlebar_view =
+            NSView::initWithFrame(NSView::alloc(m), rect(0., 0., add_x + 108., 24.));
+        titlebar_view.addSubview(&title);
+        let add = self.button("+ Add App", sel!(addWindow:), rect(add_x, 0., 100., 24.));
+        add.setFont(Some(&theme::font(13.)));
+        add.setBezelStyle(NSBezelStyle::AccessoryBarAction);
+        add.setBordered(true);
+        add.setBezelColor(Some(&theme::color(theme::BORDER)));
+        // Native bezel drawing can choose black text when the window becomes
+        // active. Pin the attributed title color in both button states.
+        let text_color = NSColor::whiteColor();
+        let font = theme::font(13.);
+        let attributes = NSDictionary::from_slices(
+            &[unsafe { NSForegroundColorAttributeName }, unsafe {
+                NSFontAttributeName
+            }],
+            &[&*text_color as &AnyObject, &*font as &AnyObject],
+        );
+        // The attribute values have the AppKit-required NSColor and NSFont types.
+        let add_title = unsafe {
+            NSAttributedString::new_with_attributes(&NSString::from_str("+ Add App"), &attributes)
+        };
+        add.setAttributedTitle(&add_title);
+        add.setAttributedAlternateTitle(&add_title);
+        add.setToolTip(Some(&NSString::from_str("Add an existing app window")));
+        titlebar_view.addSubview(&add);
+        titlebar.setView(&titlebar_view);
+        window.addTitlebarAccessoryViewController(&titlebar);
         let height = NSScreen::screens(m)
             .firstObject()
             .map(|s| s.frame().size.height)
@@ -307,29 +485,27 @@ impl Delegate {
         window.setOpaque(false);
         window.setBackgroundColor(Some(&NSColor::clearColor()));
         let surface = WorkspaceSurface::new(m, window.contentView().unwrap().bounds());
+        surface.setClipsToBounds(true);
         window.setContentView(Some(&surface));
         let content = window.contentView().unwrap();
         let h = content.bounds().size.height;
         let w = content.bounds().size.width;
-        let scroll = {
-            NSScrollView::initWithFrame(NSScrollView::alloc(m), rect(0., h - 36., w - 44., 34.))
-        };
+        let scroll = NSScrollView::initWithFrame(
+            NSScrollView::alloc(m),
+            rect(FRAME, h - 36., w - 2. * FRAME, 34.),
+        );
         scroll.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin,
         );
         scroll.setHasHorizontalScroller(true);
         scroll.setAutohidesScrollers(true);
         scroll.setDrawsBackground(false);
-        let tabs = { NSView::initWithFrame(NSView::alloc(m), rect(0., 0., w - 44., 32.)) };
+        scroll.setClipsToBounds(true);
+        scroll.contentView().setClipsToBounds(true);
+        let tabs = NSView::initWithFrame(NSView::alloc(m), rect(0., 0., w - 2. * FRAME, 32.));
+        tabs.setClipsToBounds(true);
         scroll.setDocumentView(Some(&tabs));
         content.addSubview(&scroll);
-        let add = self.button("+", sel!(addWindow:), rect(w - 38., h - 34., 30., 30.));
-        add.setFont(Some(&theme::font(20.)));
-        add.setToolTip(Some(&NSString::from_str("Add an existing app window")));
-        add.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
-        );
-        content.addSubview(&add);
         let permission_button = self.button(
             "Allow window control…",
             sel!(permission:),
@@ -366,49 +542,35 @@ impl Delegate {
         content.addSubview(&status);
         let hint = NSTextField::labelWithString(
             &NSString::from_str(
-                "Your apps, together.\n\nUse + to add an open app window.\nDouble-click a tab to rename it. Drag tabs to reorder.\nClose a tab to release its window; the app keeps running.",
+                "Your apps, together.\n\nUse Add App to add an open app window.\nDouble-click a tab to rename it. Drag tabs to reorder.\nClose a tab to release its window; the app keeps running.",
             ),
             m,
         );
-        hint.setFrame(rect(40., 80., 620., 150.));
         hint.setFont(Some(&theme::font(13.)));
         hint.setTextColor(Some(&theme::color(theme::SECONDARY)));
-        content.addSubview(&hint);
-        let picker = {
-            NSPanel::initWithContentRect_styleMask_backing_defer(
-                NSPanel::alloc(m),
-                rect(0., 0., 680., 175.),
-                NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
-                NSBackingStoreType::Buffered,
-                false,
-            )
-        };
-        unsafe {
-            picker.setReleasedWhenClosed(false);
-        }
-        picker.setTitle(&NSString::from_str("Choose an existing window"));
-        let pv = picker.contentView().unwrap();
-        let search =
-            { NSSearchField::initWithFrame(NSSearchField::alloc(m), rect(16., 128., 648., 28.)) };
-        search.setPlaceholderString(Some(&NSString::from_str("Search apps or window titles")));
-        unsafe {
-            search.setDelegate(Some(ProtocolObject::from_ref(self)));
-        }
-        pv.addSubview(&search);
-        let choices = {
-            NSPopUpButton::initWithFrame_pullsDown(
-                NSPopUpButton::alloc(m),
-                rect(16., 78., 648., 32.),
-                false,
-            )
-        };
-        pv.addSubview(&choices);
-        pv.addSubview(&self.button("Refresh", sel!(refreshWindows:), rect(16., 20., 100., 32.)));
-        pv.addSubview(&self.button(
-            "Attach window",
-            sel!(attachWindow:),
-            rect(504., 20., 160., 32.),
+        hint.sizeToFit();
+        let hint_height = hint.frame().size.height;
+        hint.setFrame(rect(
+            24.,
+            h - CHROME - 24. - hint_height,
+            w - 48.,
+            hint_height,
         ));
+        hint.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin,
+        );
+        content.addSubview(&hint);
+        let picker = crate::picker::InlinePicker::new(
+            m,
+            self,
+            rect(FRAME, FRAME, w - 2. * FRAME, h - CHROME - 2. * FRAME),
+        );
+        unsafe {
+            picker
+                .search
+                .setDelegate(Some(ProtocolObject::from_ref(self)));
+        }
+        content.addSubview(&picker.view);
         let parsed = [&workspace.previous_shortcut, &workspace.next_shortcut]
             .iter()
             .map(|s| HotKey::from_str(s))
@@ -420,9 +582,12 @@ impl Delegate {
         let manager = GlobalHotKeyManager::new();
         let shortcut_error =
             shortcut_error.or_else(|| manager.as_ref().err().map(|e| e.to_string()));
+        let backdrop = crate::backdrop::Backdrop::new(m);
+        let _ = self.ivars().backdrop.set(backdrop.clone());
         *self.ivars().ui.borrow_mut() = Some(Ui {
             client,
             window: window.clone(),
+            backdrop,
             tabs,
             surface,
             hint,
@@ -432,9 +597,8 @@ impl Delegate {
             replace_button,
             rename_editor: None,
             picker,
-            search,
-            choices,
-            choice_ids: vec![],
+            picker_open: false,
+            pending_picker: false,
             replacement: None,
             editing: None,
             tab_signature: String::new(),
@@ -444,10 +608,24 @@ impl Delegate {
             shortcut_error,
             last_close_attempt: 0,
             last_frame: None,
+            last_area: None,
+            editing_focus_pending: None,
+            pending_rename: None,
             raise_after: None,
             dock_test_stage: 0,
             dock_test_tick: 0,
             smoke_failed: false,
+            fixture_child,
+            fixture_rename_started: false,
+            fixture_rename_tested: false,
+            fixture_attach_pending: None,
+            fixture_attach_after: 0,
+            fixture_picker_cancel_tested: false,
+            last_direct_window: None,
+            fixture_reveal_started: false,
+            fixture_reveal_tested: false,
+            fixture_reveal_ordered: false,
+            fixture_keyboard_ready: false,
         });
         unsafe {
             NSWorkspace::sharedWorkspace()
@@ -513,7 +691,12 @@ impl Delegate {
         app.setMainMenu(Some(&menu));
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         window.makeKeyAndOrderFront(None);
-        if std::env::args().any(|a| a == "--design-smoke") {
+        if std::env::args().any(|a| {
+            matches!(
+                a.as_str(),
+                "--design-smoke" | "--ui-smoke" | "--frame-smoke" | "--pointer-smoke"
+            )
+        }) {
             println!("Preview window ID: {}", window.windowNumber());
         }
         #[allow(deprecated)]
@@ -577,12 +760,18 @@ impl Delegate {
                 let content = u.window.contentView().unwrap().bounds();
                 let title_height = cocoa.size.height - content.size.height;
                 let area = Rect {
-                    x: frame.x,
-                    y: frame.y + title_height + CHROME,
-                    width: content.size.width,
-                    height: (content.size.height - CHROME).max(100.),
+                    x: frame.x + FRAME,
+                    y: frame.y + title_height + u.surface.chrome() + FRAME,
+                    width: content.size.width - 2. * FRAME,
+                    height: (content.size.height - u.surface.chrome() - 2. * FRAME).max(100.),
                 };
                 u.last_frame = Some(frame);
+                u.last_area = Some(area);
+                let primary = NSScreen::screens(self.mtm())
+                    .firstObject()
+                    .map(|s| s.frame().size.height)
+                    .unwrap_or(900.);
+                u.backdrop.follow(area, primary);
                 u.raise_after = Some(std::time::Instant::now());
                 u.client.send(Command::Resize(area, frame));
             }
@@ -605,11 +794,17 @@ impl Delegate {
             Rect::from_cocoa(f.origin.x, f.origin.y, f.size.width, f.size.height, primary);
         let content = u.window.contentView().unwrap();
         let bounds = content.bounds();
+        u.picker.layout(rect(
+            FRAME,
+            FRAME,
+            bounds.size.width - 2. * FRAME,
+            (bounds.size.height - u.surface.chrome() - 2. * FRAME).max(100.),
+        ));
         let body = u.window.convertRectToScreen(rect(
-            0.,
-            0.,
-            bounds.size.width,
-            (bounds.size.height - CHROME).max(100.),
+            FRAME,
+            FRAME,
+            bounds.size.width - 2. * FRAME,
+            (bounds.size.height - u.surface.chrome() - 2. * FRAME).max(100.),
         ));
         let area = Rect::from_cocoa(
             body.origin.x,
@@ -618,8 +813,10 @@ impl Delegate {
             body.size.height,
             primary,
         );
-        if u.last_frame != Some(geometry) {
+        if u.last_frame != Some(geometry) || u.last_area != Some(area) {
             u.last_frame = Some(geometry);
+            u.last_area = Some(area);
+            u.backdrop.follow(area, primary);
             u.raise_after = Some(std::time::Instant::now());
             u.client.send(Command::Resize(area, geometry));
         }
@@ -629,6 +826,14 @@ impl Delegate {
         self.ivars().ticks.set(count + 1);
         let mut b = self.ivars().ui.borrow_mut();
         let Some(u) = b.as_mut() else { return };
+        if self.ivars().rename_blur_requested.replace(false)
+            && u.rename_editor.is_some()
+            && !u.window.isKeyWindow()
+        {
+            drop(b);
+            self.finish_rename(true);
+            return;
+        }
         if count.is_multiple_of(14) {
             let apps = NSWorkspace::sharedWorkspace()
                 .runningApplications()
@@ -647,22 +852,212 @@ impl Delegate {
                 })
                 .collect();
             u.client.send(Command::Apps(apps));
-            if count == 0 {
+            if count.is_multiple_of(70) && NSEvent::pressedMouseButtons() == 0 {
                 u.client.send(Command::Discover);
             }
         }
         u.client
             .set_pointer_down(NSEvent::pressedMouseButtons() != 0);
-        let s = u.client.snapshot.lock().unwrap().clone();
+        let mut s = u.client.snapshot.lock().unwrap().clone();
+        if count.is_multiple_of(14) {
+            let targets = s
+                .live
+                .iter()
+                .filter_map(|(tab, window)| {
+                    let pid = s.windows.iter().find(|w| w.id == *window)?.pid;
+                    let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?;
+                    let path = app
+                        .bundleURL()
+                        .or_else(|| app.executableURL())?
+                        .path()?
+                        .to_string();
+                    Some((*tab, *window, path))
+                })
+                .collect::<Vec<_>>();
+            let dock = NSRunningApplication::runningApplicationsWithBundleIdentifier(
+                &NSString::from_str("com.apple.dock"),
+            )
+            .firstObject();
+            if let Some(dock) = dock {
+                u.client
+                    .send(Command::ReadBadges(dock.processIdentifier(), targets));
+            } else {
+                u.client.send(Command::ReadBadges(0, vec![]));
+            }
+        }
+        if std::env::args().any(|a| a == "--design-smoke") {
+            s.badges.insert(7, "7".into());
+            s.badges.insert(8, "•".into());
+        }
+        if u.picker_open
+            && !u.pending_picker
+            && count >= u.fixture_attach_after
+            && let Some(id) = u.fixture_attach_pending.take()
+        {
+            if u.fixture_child.is_some() && !u.fixture_keyboard_ready {
+                u.fixture_keyboard_ready = true;
+                u.fixture_attach_pending = Some(id);
+                u.fixture_attach_after = count + 2;
+                drop(b);
+                self.present_picker();
+                return;
+            }
+            u.fixture_keyboard_ready = false;
+            let search = u.picker.search.clone();
+            let test =
+                u.fixture_child.is_some() && !std::env::args().any(|a| a == "--pointer-smoke");
+            let cancel = test && !u.fixture_picker_cancel_tested;
+            u.fixture_picker_cancel_tested |= test;
+            if cancel {
+                u.fixture_attach_pending = Some(id);
+            }
+            drop(b);
+            if test {
+                self.verify_rename_keyboard(&search);
+                search.setStringValue(&NSString::from_str("__no_matching_window__"));
+                self.filter();
+                assert!(
+                    self.ivars()
+                        .ui
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .picker
+                        .choice_ids
+                        .is_empty(),
+                    "Inline picker did not filter results"
+                );
+                search.setStringValue(&NSString::from_str(""));
+                self.filter();
+            }
+            if cancel {
+                self.dismiss_picker(true);
+                assert!(
+                    self.ivars()
+                        .ui
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .picker
+                        .view
+                        .isHidden(),
+                    "Cancel did not dismiss inline picker"
+                );
+                self.show_picker(false);
+                return;
+            }
+            assert!(
+                self.ivars()
+                    .ui
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .picker
+                    .select_window(id),
+                "Fixture target missing from inline picker"
+            );
+            self.attach_selected_window();
+            println!("Integrated inline picker attachment submitted");
+            return;
+        }
+        if u.editing_focus_pending == Some(s.editing_ack) {
+            u.editing_focus_pending = None;
+            if let Some(id) = u.pending_rename.take() {
+                drop(b);
+                self.open_rename(id);
+                return;
+            }
+            if u.pending_picker {
+                u.pending_picker = false;
+                drop(b);
+                self.present_picker();
+                return;
+            }
+        }
+        if !s.paused
+            && u.rename_editor.is_none()
+            && u.pending_rename.is_none()
+            && !u.picker_open
+            && !u.pending_picker
+            && !u.window.inLiveResize()
+            && NSEvent::pressedMouseButtons() == 0
+            && !self.ivars().dragging.get()
+            && u.last_frame
+                .is_some_and(|frame| frame.near(s.workspace.geometry))
+            && u.last_area.is_some_and(|area| area.near(s.area))
+            && let Some(selected) = s.selected_frame
+        {
+            let content = u.surface.bounds().size;
+            let width = content.width.max(selected.width + 2. * FRAME);
+            let height = content
+                .height
+                .max(selected.height + u.surface.chrome() + 2. * FRAME);
+            if width - content.width > 3. || height - content.height > 3. {
+                let window = u.window.clone();
+                let frame = window.frame();
+                let new_height = frame.size.height + height - content.height;
+                drop(b);
+                window.setFrame_display(
+                    rect(
+                        frame.origin.x,
+                        frame.origin.y + frame.size.height - new_height,
+                        width,
+                        new_height,
+                    ),
+                    true,
+                );
+                return;
+            }
+        }
+        if !s.paused
+            && !s.quitting
+            && !s.stopped
+            && u.window.isVisible()
+            && !u.window.isMiniaturized()
+            && !NSApplication::sharedApplication(self.mtm()).isHidden()
+            && let Some((number, frames)) = &s.backdrop
+        {
+            let primary = NSScreen::screens(self.mtm())
+                .firstObject()
+                .map(|s| s.frame().size.height)
+                .unwrap_or(900.);
+            u.backdrop.place(
+                *number,
+                Some(u.window.windowNumber() as u32),
+                frames,
+                primary,
+            );
+        } else {
+            u.backdrop.hide();
+        }
         let attached = std::env::args().any(|a| a == "--surface-smoke")
             || s.selected
                 .is_some_and(|id| s.live.iter().any(|(tab, _)| *tab == id));
-        u.surface.set_attached(attached);
-        u.hint.setHidden(attached);
+        u.surface.set_attached(attached && !u.picker_open);
+        u.hint.setHidden(attached || u.picker_open);
         if self.ivars().raise_requested.replace(false) {
             u.raise_after = Some(std::time::Instant::now() - std::time::Duration::from_millis(251));
         }
         u.editing = action_tab(u.editing, s.selected, &s.workspace.tabs);
+        if std::env::args().any(|a| a == "--cleanup-smoke") && count == 12 {
+            assert!(
+                s.workspace.tabs.is_empty(),
+                "Stale startup tabs were not removed"
+            );
+            assert!(
+                s.live.is_empty() && s.selected.is_none(),
+                "Fresh launch unexpectedly attached a window"
+            );
+            assert!(
+                persistence::load(&persistence::path())
+                    .unwrap()
+                    .tabs
+                    .is_empty(),
+                "Startup cleanup was not persisted"
+            );
+            println!("Native startup cleanup passed: stale saved tabs removed and persisted");
+            u.client.send(Command::Quit);
+        }
         if std::env::args().any(|a| a == "--disconnected-smoke") {
             if count == 4 {
                 drop(b);
@@ -702,6 +1097,7 @@ impl Delegate {
                     .field
                     .clone();
                 drop(b);
+                self.verify_rename_keyboard(&field);
                 field.setStringValue(&NSString::from_str("Discord - account 1"));
                 self.finish_rename(true);
                 return;
@@ -725,14 +1121,18 @@ impl Delegate {
             if count == 16 {
                 assert_eq!(s.workspace.tabs[0].name, "Discord - account 1");
                 assert!(u.rename_editor.is_none());
-                println!("Native double-click inline rename regression passed: commit and cancel");
+                println!(
+                    "Native rename regression passed: AppDock owns keyboard focus, Ctrl+A/Cmd+A select all, typing, commit and cancel"
+                );
                 u.client.send(Command::Quit);
             }
         }
         if u.raise_after.is_some_and(|t| t.elapsed().as_millis() > 250)
             && !u.window.inLiveResize()
-            && !u.picker.isVisible()
+            && !u.picker_open
+            && !u.pending_picker
             && u.rename_editor.is_none()
+            && u.pending_rename.is_none()
         {
             u.raise_after = None;
             u.client.send(Command::Raise);
@@ -763,7 +1163,18 @@ impl Delegate {
                     alpha(20) > 0.99 || alpha(h - 20) > 0.99,
                     "Tab strip must stay opaque"
                 );
-                println!("Native surface regression passed: transparent app area, opaque controls");
+                assert!(
+                    bitmap.colorAtX_y(2, h / 2).unwrap().alphaComponent() > 0.99
+                        && bitmap.colorAtX_y(w - 3, h / 2).unwrap().alphaComponent() > 0.99,
+                    "AppDock side frame is missing"
+                );
+                assert!(
+                    alpha(2) > 0.99 && alpha(h - 3) > 0.99,
+                    "AppDock top/bottom frame is missing"
+                );
+                println!(
+                    "Native surface regression passed: transparent app area, opaque controls and surrounding frame"
+                );
             }
             let data = unsafe {
                 bitmap.representationUsingType_properties(
@@ -793,8 +1204,12 @@ impl Delegate {
         {
             u.client.send(Command::Quit);
         }
-        if std::env::args().any(|a| matches!(a.as_str(), "--dock-smoke" | "--picker-smoke"))
-            && u.dock_test_stage < 20
+        if std::env::args().any(|a| {
+            matches!(
+                a.as_str(),
+                "--dock-smoke" | "--picker-smoke" | "--frame-smoke" | "--pointer-smoke"
+            )
+        }) && u.dock_test_stage < 20
         {
             if s.status.starts_with("Paused:") || count > 400 {
                 eprintln!(
@@ -804,7 +1219,7 @@ impl Delegate {
                 u.smoke_failed = true;
                 u.dock_test_stage = 20;
                 u.client.send(Command::Quit);
-            } else if count > u.dock_test_tick + 8 {
+            } else if count > u.dock_test_tick + if u.fixture_child.is_some() { 2 } else { 8 } {
                 let stage = u.dock_test_stage;
                 if stage == 0 || stage == 1 {
                     let bundle = if stage == 0 {
@@ -815,32 +1230,34 @@ impl Delegate {
                     let candidates: Vec<_> = s
                         .windows
                         .iter()
-                        .filter(|w| w.eligible && w.identity.bundle == bundle)
+                        .filter(|w| {
+                            w.eligible
+                                && if let Some(child) = &u.fixture_child {
+                                    w.pid == child.id() as i32 && !s.occupied.contains(&w.id)
+                                } else {
+                                    w.identity.bundle == bundle
+                                }
+                        })
                         .collect();
-                    if candidates.len() == 1
+                    if (candidates.len() == 1
+                        || (u.fixture_child.is_some() && !candidates.is_empty()))
                         && s.live.len() == stage
                         && (stage == 0 || s.selected == s.workspace.tabs.first().map(|t| t.id))
                     {
                         let window_id = candidates[0].id;
+                        u.fixture_attach_pending = Some(window_id);
+                        u.fixture_attach_after =
+                            if stage == 0 && std::env::var_os("APPDOCK_PICKER_PREVIEW").is_some() {
+                                count + 80
+                            } else {
+                                count
+                            };
                         u.dock_test_stage += 1;
                         u.dock_test_tick = count;
                         let window = u.window.clone();
                         drop(b);
                         window.makeKeyAndOrderFront(None);
                         self.show_picker(false);
-                        let choice = {
-                            let b = self.ivars().ui.borrow();
-                            let u = b.as_ref().unwrap();
-                            u.choice_ids
-                                .iter()
-                                .position(|id| *id == window_id)
-                                .map(|index| (u.choices.clone(), index))
-                        };
-                        if let Some((choices, index)) = choice {
-                            choices.selectItemAtIndex(index as isize);
-                            self.attach_selected_window();
-                            println!("Integrated picker attachment {} submitted", stage + 1);
-                        }
                         return;
                     }
                 } else if stage == 2
@@ -855,12 +1272,82 @@ impl Delegate {
                     && s.live.len() == 2
                     && (stage == 2 || s.selected == Some(s.workspace.tabs[(stage - 3) % 2].id))
                 {
+                    if u.fixture_child.is_some() {
+                        if !s.selected_frame.is_some_and(|frame| frame.near(s.area)) {
+                            return;
+                        }
+                        if std::env::args().any(|a| a == "--pointer-smoke") {
+                            u.dock_test_stage = 14;
+                            u.dock_test_tick = count;
+                            return;
+                        }
+                        if !u.fixture_rename_tested {
+                            if !u.fixture_rename_started {
+                                u.fixture_rename_started = true;
+                                u.client.send(Command::Raise);
+                                let id = s.selected.unwrap();
+                                drop(b);
+                                self.begin_rename(id);
+                                self.ivars()
+                                    .ui
+                                    .borrow()
+                                    .as_ref()
+                                    .unwrap()
+                                    .client
+                                    .send(Command::Raise);
+                                return;
+                            }
+                            if u.editing_focus_pending.is_some() {
+                                return;
+                            }
+                            let field = u
+                                .rename_editor
+                                .as_ref()
+                                .expect("Renaming ended while app was attached")
+                                .field
+                                .clone();
+                            u.fixture_rename_tested = true;
+                            u.dock_test_tick = count;
+                            let manager = u.window.clone();
+                            let number = s.backdrop.as_ref().unwrap().0;
+                            let frame = s.selected_frame.unwrap();
+                            drop(b);
+                            self.verify_rename_keyboard(&field);
+                            self.verify_app_pointer_routes(&manager, number, frame);
+                            self.finish_rename(false);
+                            println!(
+                                "Attached-app rename retained keyboard focus despite queued Raise requests"
+                            );
+                            return;
+                        }
+                        assert!(
+                            s.workspace.geometry.height > 400.,
+                            "Manager did not grow around native minimum size"
+                        );
+                    }
                     let wanted = s.workspace.tabs[(stage - 2) % 2].id;
                     u.client.switch(wanted);
                     println!("Integrated switch {} requested", stage - 1);
                     u.dock_test_stage += 1;
                     u.dock_test_tick = count;
                 } else if stage == 14 && s.selected == Some(s.workspace.tabs[1].id) {
+                    if u.fixture_child.is_some() && !u.fixture_reveal_tested {
+                        if !u.fixture_reveal_started {
+                            u.fixture_reveal_started = true;
+                            u.dock_test_tick = count;
+                            let window = u.window.clone();
+                            let client = u.client.clone();
+                            drop(b);
+                            window.orderBack(None);
+                            client.send(Command::Raise);
+                            return;
+                        }
+                        // The reveal itself verifies keyboard ownership immediately;
+                        // desktop focus can legitimately change before this later stage.
+                        u.dock_test_tick = count;
+                        u.client.send(Command::Raise);
+                        return;
+                    }
                     u.dock_test_stage = 15;
                     u.dock_test_tick = count;
                     let window = u.window.clone();
@@ -871,6 +1358,16 @@ impl Delegate {
                     window.setFrame_display(f, true);
                     return;
                 } else if stage == 15 {
+                    if std::env::args().any(|a| a == "--pointer-smoke") {
+                        if !s.selected_frame.is_some_and(|frame| frame.near(s.area)) {
+                            return;
+                        }
+                        self.verify_app_pointer_routes(
+                            &u.window,
+                            s.backdrop.as_ref().unwrap().0,
+                            s.selected_frame.unwrap(),
+                        );
+                    }
                     println!(
                         "Integrated docking and manager resize completed; releasing first tab"
                     );
@@ -887,10 +1384,19 @@ impl Delegate {
             }
         }
         if s.stopped {
+            if let Some(mut child) = u.fixture_child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             if u.smoke_failed {
                 std::process::exit(1);
             }
-            if std::env::args().any(|a| matches!(a.as_str(), "--dock-smoke" | "--picker-smoke")) {
+            if std::env::args().any(|a| {
+                matches!(
+                    a.as_str(),
+                    "--dock-smoke" | "--picker-smoke" | "--frame-smoke" | "--pointer-smoke"
+                )
+            }) {
                 println!("Integrated restoration complete");
             }
             let window = u.window.clone();
@@ -910,13 +1416,28 @@ impl Delegate {
         } else {
             u.shortcut_error.clone().unwrap_or_else(|| {
                 if s.status == "Ready" || s.status.starts_with("Add an existing") {
-                    "Double-click to rename · Drag to reorder".into()
+                    String::new()
                 } else {
                     s.status.clone()
                 }
             })
         };
         u.status.setStringValue(&NSString::from_str(&text));
+        u.status.setHidden(text.is_empty());
+        let chrome = if !text.is_empty() || !s.trusted || s.paused || disconnected {
+            STATUS_CHROME
+        } else {
+            CHROME
+        };
+        if u.surface.set_chrome(chrome) {
+            let bounds = u.surface.bounds();
+            let mut frame = u.hint.frame();
+            frame.origin.y = bounds.size.height - chrome - 24. - frame.size.height;
+            u.hint.setFrame(frame);
+            drop(b);
+            self.geometry();
+            return;
+        }
         if s.quitting && u.last_close_attempt != s.close_attempt {
             u.last_close_attempt = s.close_attempt;
             drop(b);
@@ -938,6 +1459,82 @@ impl Delegate {
         let foreground = NSWorkspace::sharedWorkspace()
             .frontmostApplication()
             .map(|a| a.processIdentifier());
+        // Keep the external app above its surrounding frame so it receives mouse
+        // input. Transparent drawing is not a window-level click-through contract.
+        // Match the cached exact window number, not
+        // merely its app: unrelated windows from the same process stay independent.
+        if !s.paused
+            && !s.quitting
+            && !u.picker_open
+            && !u.pending_picker
+            && u.rename_editor.is_none()
+            && u.pending_rename.is_none()
+            && !u.window.isMiniaturized()
+        {
+            let focused = foreground
+                .filter(|pid| s.stacked_windows.iter().any(|(_, _, owner)| owner == pid))
+                .and_then(|pid| {
+                    let stack = crate::window_tracking::stack()?;
+                    let front = stack.iter().find(|w| w.pid == pid)?;
+                    let (tab, number, _) = s
+                        .stacked_windows
+                        .iter()
+                        .find(|(_, number, owner)| *number == front.number && *owner == pid)?;
+                    let index = stack.iter().position(|w| w.number == *number)?;
+                    let already_behind = stack
+                        .get(index + 1)
+                        .is_some_and(|w| w.number as isize == u.window.windowNumber());
+                    Some((*tab, *number, already_behind))
+                });
+            if let Some((tab, number, already_behind)) = focused {
+                if u.last_direct_window != Some(number)
+                    && s.selected != Some(tab)
+                    && !u.client.is_switching_to(tab)
+                {
+                    u.editing = Some(tab);
+                    u.client.switch(tab);
+                }
+                u.last_direct_window = Some(number);
+                if already_behind && u.fixture_reveal_ordered && !u.fixture_reveal_tested {
+                    self.verify_app_pointer_routes(
+                        &u.window,
+                        number,
+                        s.selected_frame.expect("Missing selected frame"),
+                    );
+                    u.fixture_reveal_tested = true;
+                    println!(
+                        "Direct app focus brought AppDock forward without taking keyboard focus"
+                    );
+                }
+                if !already_behind || !u.window.isVisible() {
+                    let verify = u.fixture_reveal_started
+                        && !u.fixture_reveal_tested
+                        && u.fixture_child.is_some();
+                    if verify {
+                        u.fixture_reveal_ordered = true;
+                    }
+                    let window = u.window.clone();
+                    drop(b);
+                    let app = NSApplication::sharedApplication(self.mtm());
+                    if app.isHidden() {
+                        app.unhideWithoutActivation();
+                    }
+                    window.orderWindow_relativeTo(NSWindowOrderingMode::Below, number as isize);
+                    if verify {
+                        assert_eq!(
+                            NSWorkspace::sharedWorkspace()
+                                .frontmostApplication()
+                                .map(|app| app.processIdentifier()),
+                            foreground,
+                            "Revealing AppDock stole app keyboard focus"
+                        );
+                    }
+                    return;
+                }
+            } else {
+                u.last_direct_window = None;
+            }
+        }
         let eligible = foreground == Some(std::process::id() as i32)
             || s.live.iter().any(|(_, id)| {
                 s.windows
@@ -962,7 +1559,14 @@ impl Delegate {
             }
         }
         while let Ok(e) = GlobalHotKeyEvent::receiver().try_recv() {
-            if eligible && e.state == HotKeyState::Pressed && !s.workspace.tabs.is_empty() {
+            if eligible
+                && u.rename_editor.is_none()
+                && u.pending_rename.is_none()
+                && !u.picker_open
+                && !u.pending_picker
+                && e.state == HotKeyState::Pressed
+                && !s.workspace.tabs.is_empty()
+            {
                 let index = s
                     .workspace
                     .tabs
@@ -979,10 +1583,13 @@ impl Delegate {
             }
         }
         let signature = format!(
-            "{:?}{:?}{:?}{:?}",
-            s.workspace.tabs, s.live, s.selected, u.editing
+            "{:?}{:?}{:?}{:?}{:?}",
+            s.workspace.tabs, s.live, s.selected, u.editing, s.badges
         );
-        if signature != u.tab_signature && u.rename_editor.is_none() {
+        if signature != u.tab_signature
+            && u.rename_editor.is_none()
+            && NSEvent::pressedMouseButtons() == 0
+        {
             u.tab_signature = signature;
             for view in u.tabs.subviews() {
                 view.removeFromSuperview();
@@ -1000,10 +1607,15 @@ impl Delegate {
                 };
                 let button = TabButton::new(
                     self.mtm(),
-                    rect(i as f64 * TAB_WIDTH, 0., TAB_WIDTH - 28., 32.),
+                    rect(i as f64 * TAB_WIDTH + 4., 0., TAB_WIDTH - 32., 32.),
                     u.editing == Some(t.id),
+                    s.badges.get(&t.id).and_then(|label| badge_text(label)),
                 );
                 button.setTitle(&NSString::from_str(&label));
+                if let Some(cell) = button.cell() {
+                    cell.setWraps(false);
+                    cell.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+                }
                 button.setBordered(false);
                 button.setAlignment(NSTextAlignment::Left);
                 button.setFont(Some(&theme::font(13.)));
@@ -1017,9 +1629,14 @@ impl Delegate {
                     button.setAction(Some(sel!(selectTab:)));
                 }
                 button.setTag(t.id as isize);
+                let badge_hint = s
+                    .badges
+                    .get(&t.id)
+                    .map(|label| format!(" — App-wide Dock badge: {label}"))
+                    .unwrap_or_default();
                 button.setToolTip(Some(&NSString::from_str(&format!(
-                    "{} — double-click to rename, drag to reorder",
-                    t.name
+                    "{}{} — double-click to rename, drag to reorder",
+                    t.name, badge_hint
                 ))));
                 if let Some((_, wid)) = connected
                     && let Some(w) = s.windows.iter().find(|w| w.id == *wid)
@@ -1055,18 +1672,23 @@ impl Delegate {
     }
     fn filter(&self) {
         let mut b = self.ivars().ui.borrow_mut();
-        let Some(u) = b.as_mut() else { return };
-        if !u.picker.isVisible() {
+        let Some(u) = b.as_mut() else {
+            return;
+        };
+        if !u.picker_open && !u.pending_picker {
             return;
         }
         let s = u.client.snapshot.lock().unwrap().clone();
-        let query = u.search.stringValue().to_string().to_lowercase();
-        let windows: Vec<_> = s
+        let query = u.picker.query();
+        let mut windows: Vec<_> = s
             .windows
             .iter()
             .filter(|w| {
                 w.eligible
                     && !s.occupied.contains(&w.id)
+                    && u.fixture_child
+                        .as_ref()
+                        .is_none_or(|child| w.pid == child.id() as i32)
                     && (u.replacement.is_some()
                         || !s.workspace.tabs.iter().any(|t| {
                             t.identity.bundle == w.identity.bundle
@@ -1077,72 +1699,230 @@ impl Delegate {
                         .contains(&query)
             })
             .collect();
-        let ids: Vec<_> = windows.iter().map(|w| w.id).collect();
-        if ids == u.choice_ids {
-            return;
-        }
-        u.choice_ids = ids;
-        u.choices.removeAllItems();
-        for w in windows {
-            u.choices.addItemWithTitle(&NSString::from_str(&format!(
-                "{} — {} (process {}, window {})",
-                w.app, w.title, w.pid, w.id
-            )));
-        }
+        windows.sort_by_key(|w| (w.app.to_lowercase(), w.title.to_lowercase(), w.pid, w.id));
+        u.picker.render(self.mtm(), self, windows);
     }
     fn show_picker(&self, replace: bool) {
-        let mut b = self.ivars().ui.borrow_mut();
-        let Some(u) = b.as_mut() else { return };
-        u.replacement = if replace { u.editing } else { None };
-        if replace && u.replacement.is_none() {
-            return;
-        }
-        u.client.send(Command::Discover);
-        let picker = u.picker.clone();
-        let unresolved = {
-            let s = u.client.snapshot.lock().unwrap();
-            !replace
-                && s.workspace
-                    .tabs
-                    .iter()
-                    .any(|t| !s.live.iter().any(|(id, _)| *id == t.id))
+        self.finish_rename(true);
+        let (window, search) = {
+            let mut b = self.ivars().ui.borrow_mut();
+            let Some(u) = b.as_mut() else {
+                return;
+            };
+            u.replacement = if replace { u.editing } else { None };
+            if replace && u.replacement.is_none() {
+                return;
+            }
+            u.picker.configure(replace);
+            u.pending_picker = true;
+            u.editing_focus_pending = Some(u.client.set_text_editing(true));
+            u.client.send(Command::Discover);
+            (u.window.clone(), u.picker.search.clone())
         };
-        drop(b);
-        picker.setTitle(&NSString::from_str(if unresolved {
-            "Add window — use Replace window for disconnected apps"
-        } else {
-            "Choose an existing window"
-        }));
-        // AppKit can synchronously send window-delegate notifications here.
-        picker.center();
-        picker.makeKeyAndOrderFront(None);
+        search.setStringValue(&NSString::from_str(""));
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
+        window.makeKeyAndOrderFront(None);
         self.filter();
+    }
+    fn present_picker(&self) {
+        let (window, view, search, surface, hint) = {
+            let mut b = self.ivars().ui.borrow_mut();
+            let Some(u) = b.as_mut() else {
+                return;
+            };
+            u.picker_open = true;
+            (
+                u.window.clone(),
+                u.picker.view.clone(),
+                u.picker.search.clone(),
+                u.surface.clone(),
+                u.hint.clone(),
+            )
+        };
+        self.ivars()
+            .rename_text_view
+            .get_or_init(|| RenameFieldEditor::new(self.mtm()));
+        self.ivars()
+            .rename_field
+            .set(Some(std::ptr::NonNull::from(&*search as &AnyObject)));
+        surface.set_attached(false);
+        hint.setHidden(true);
+        view.setHidden(false);
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
+        window.makeKeyAndOrderFront(None);
+        unsafe {
+            search.selectText(None);
+        }
+        if self
+            .ivars()
+            .ui
+            .borrow()
+            .as_ref()
+            .is_some_and(|u| u.fixture_child.is_some())
+        {
+            println!("Inline picker visible: {}", window.windowNumber());
+        }
+        self.filter();
+    }
+    fn dismiss_picker(&self, raise: bool) {
+        let pending = {
+            let mut b = self.ivars().ui.borrow_mut();
+            let Some(u) = b.as_mut() else {
+                return;
+            };
+            if !u.picker_open && !u.pending_picker {
+                return;
+            }
+            u.picker_open = false;
+            u.pending_picker = false;
+            u.editing_focus_pending = None;
+            let s = u.client.snapshot.lock().unwrap();
+            let attached = s
+                .selected
+                .is_some_and(|id| s.live.iter().any(|(tab, _)| *tab == id));
+            (
+                u.window.clone(),
+                u.picker.view.clone(),
+                u.surface.clone(),
+                u.hint.clone(),
+                u.client.clone(),
+                attached,
+            )
+        };
+        let (window, view, surface, hint, client, attached) = pending;
+        self.ivars().rename_field.set(None);
+        window.makeFirstResponder(None);
+        view.setHidden(true);
+        surface.set_attached(attached);
+        hint.setHidden(attached);
+        client.set_text_editing(false);
+        if raise {
+            client.send(Command::Raise);
+        }
     }
     fn attach_selected_window(&self) {
         let pending = {
             let b = self.ivars().ui.borrow();
-            let Some(u) = b.as_ref() else { return };
-            let index = u.choices.indexOfSelectedItem();
-            usize::try_from(index).ok().and_then(|index| {
-                u.choice_ids
-                    .get(index)
-                    .map(|id| (u.client.clone(), u.replacement, *id, u.picker.clone()))
-            })
+            let Some(u) = b.as_ref() else {
+                return;
+            };
+            if !u.picker_open {
+                return;
+            }
+            u.picker
+                .selected()
+                .map(|id| (u.client.clone(), u.replacement, id))
         };
-        if let Some((client, replacement, id, picker)) = pending {
-            // Closing the key panel activates the manager synchronously. No UI
-            // RefCell guard may survive this call into AppKit.
-            picker.orderOut(None);
+        if let Some((client, replacement, id)) = pending {
+            self.dismiss_picker(false);
             client.send(Command::Attach(replacement, id));
         }
     }
+    fn verify_app_pointer_routes(&self, window: &NSWindow, number: u32, frame: Rect) {
+        let primary = NSScreen::screens(self.mtm())
+            .firstObject()
+            .unwrap()
+            .frame()
+            .size
+            .height;
+        for (x, y) in [(0.2, 0.3), (0.5, 0.5), (0.8, 0.8)] {
+            let point = NSPoint::new(
+                frame.x + frame.width * x,
+                primary - frame.y - frame.height * y,
+            );
+            assert_eq!(
+                NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(point, 0, self.mtm()),
+                number as isize,
+                "A window above the docked app is intercepting pointer input"
+            );
+        }
+        let bounds = window.contentView().unwrap().bounds();
+        let point = window
+            .convertRectToScreen(rect(90., bounds.size.height - 16., 1., 1.))
+            .origin;
+        assert_eq!(
+            NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(point, 0, self.mtm()),
+            window.windowNumber(),
+            "AppDock controls are not clickable"
+        );
+        println!(
+            "Native pointer routing passed: app content targets the external app; tab controls target AppDock"
+        );
+    }
+    fn verify_rename_keyboard(&self, field: &NSTextField) {
+        let editor = field
+            .currentEditor()
+            .expect("Rename field has no keyboard editor")
+            .downcast::<RenameFieldEditor>()
+            .expect("Wrong rename field editor");
+        let app = NSApplication::sharedApplication(self.mtm());
+        assert!(
+            app.isActive(),
+            "AppDock did not take keyboard focus for renaming"
+        );
+        let number = field.window().unwrap().windowNumber();
+        let key = |modifiers, characters: &str| {
+            NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                    NSEventType::KeyDown,NSPoint::new(0.,0.),modifiers,0.,number,None,
+                    &NSString::from_str(characters),&NSString::from_str(characters),false,0,
+                ).unwrap()
+        };
+        for modifiers in [NSEventModifierFlags::Control, NSEventModifierFlags::Command] {
+            editor.setSelectedRange(objc2_foundation::NSRange::new(1, 0));
+            app.sendEvent(&key(modifiers, "a"));
+            assert_eq!(
+                NSTextInputClient::selectedRange(&**editor),
+                objc2_foundation::NSRange::new(0, editor.string().length()),
+                "Select-all shortcut did not reach rename field"
+            );
+        }
+        app.sendEvent(&key(NSEventModifierFlags::empty(), "x"));
+        assert_eq!(
+            editor.string().to_string(),
+            "x",
+            "Typed key did not replace rename selection"
+        );
+    }
     fn begin_rename(&self, id: TabId) {
+        self.dismiss_picker(false);
         self.finish_rename(true);
+        let window = {
+            let mut b = self.ivars().ui.borrow_mut();
+            let Some(u) = b.as_mut() else {
+                return;
+            };
+            if !u
+                .client
+                .snapshot
+                .lock()
+                .unwrap()
+                .workspace
+                .tabs
+                .iter()
+                .any(|t| t.id == id)
+            {
+                return;
+            }
+            u.editing = Some(id);
+            u.pending_rename = Some(id);
+            u.editing_focus_pending = Some(u.client.set_text_editing(true));
+            u.window.clone()
+        };
+        // Show the field only after the worker confirms all earlier focus IPC
+        // has finished. Once it is editable, no old app-raise can steal its keys.
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
+        window.makeKeyAndOrderFront(None);
+    }
+    fn open_rename(&self, id: TabId) {
         let (tabs, window, index, name) = {
             let mut b = self.ivars().ui.borrow_mut();
             let Some(u) = b.as_mut() else { return };
             let s = u.client.snapshot.lock().unwrap();
             let Some(index) = s.workspace.tabs.iter().position(|t| t.id == id) else {
+                u.client.set_text_editing(false);
                 return;
             };
             u.editing = Some(id);
@@ -1164,6 +1944,12 @@ impl Delegate {
         unsafe {
             field.setDelegate(Some(ProtocolObject::from_ref(self)));
         }
+        self.ivars()
+            .rename_text_view
+            .get_or_init(|| RenameFieldEditor::new(self.mtm()));
+        self.ivars()
+            .rename_field
+            .set(Some(std::ptr::NonNull::from(&*field as &AnyObject)));
         if let Some(u) = self.ivars().ui.borrow_mut().as_mut() {
             u.rename_editor = Some(RenameEditor {
                 id,
@@ -1171,30 +1957,57 @@ impl Delegate {
             });
         }
         tabs.addSubview(&field);
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
         window.makeKeyAndOrderFront(None);
         unsafe {
             field.selectText(None);
+        }
+        // Keep the app body clickable while the header's rename field owns keys.
+        let selected = {
+            let b = self.ivars().ui.borrow();
+            b.as_ref().and_then(|u| {
+                u.client
+                    .snapshot
+                    .lock()
+                    .unwrap()
+                    .backdrop
+                    .as_ref()
+                    .map(|(number, _)| *number)
+            })
+        };
+        if let Some(number) = selected {
+            window.orderWindow_relativeTo(NSWindowOrderingMode::Below, number as isize);
         }
     }
     fn finish_rename(&self, save: bool) {
         let pending = {
             let mut b = self.ivars().ui.borrow_mut();
             let Some(u) = b.as_mut() else { return };
-            u.rename_editor.take().map(|editor| {
+            let was_pending = u.pending_rename.take().is_some();
+            let editor = u.rename_editor.take();
+            if editor.is_some() || was_pending {
+                u.editing_focus_pending = None;
                 u.tab_signature.clear();
-                (editor, u.client.clone())
-            })
+                Some((editor, u.client.clone()))
+            } else {
+                None
+            }
         };
         if let Some((editor, client)) = pending {
-            let name = editor
-                .field
-                .currentEditor()
-                .map(|text| text.string().to_string())
-                .unwrap_or_else(|| editor.field.stringValue().to_string());
-            if save && !name.trim().is_empty() {
-                client.send(Command::Rename(editor.id, name));
+            self.ivars().rename_field.set(None);
+            if let Some(editor) = editor {
+                let name = editor
+                    .field
+                    .currentEditor()
+                    .map(|text| text.string().to_string())
+                    .unwrap_or_else(|| editor.field.stringValue().to_string());
+                if save && !name.trim().is_empty() {
+                    client.send(Command::Rename(editor.id, name));
+                }
+                editor.field.removeFromSuperview();
             }
-            editor.field.removeFromSuperview();
+            client.set_text_editing(false);
         }
     }
     fn close_request(&self) {

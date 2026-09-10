@@ -24,7 +24,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
-<key>NSAccessibilityUsageDescription</key><string>AppDock moves, resizes and minimizes only the windows you choose to organize.</string>
+<key>NSAccessibilityUsageDescription</key><string>AppDock arranges only the windows you choose to organize and restores their original state when released.</string>
 </dict></plist>
 PLIST
 plutil -lint "$bundle/Contents/Info.plist"

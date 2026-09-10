@@ -1,12 +1,16 @@
 #[cfg(target_os = "macos")]
 mod appearance;
 #[cfg(target_os = "macos")]
+mod backdrop;
+#[cfg(target_os = "macos")]
 mod diagnostic;
 mod engine;
 #[cfg(target_os = "macos")]
 mod macos;
 mod model;
 mod persistence;
+#[cfg(target_os = "macos")]
+mod picker;
 #[cfg(target_os = "macos")]
 mod ui;
 #[cfg(target_os = "macos")]
@@ -17,13 +21,39 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         let arg = std::env::args().nth(1);
-        if arg.as_deref() == Some("--movement-fixture") {
-            if let Err(e) = diagnostic::movement_fixture() {
+        if matches!(
+            arg.as_deref(),
+            Some(
+                "--movement-fixture"
+                    | "--overlay-fixture"
+                    | "--overlay-targets"
+                    | "--restoration-fixture"
+            )
+        ) {
+            let result = if matches!(
+                arg.as_deref(),
+                Some("--overlay-fixture" | "--restoration-fixture")
+            ) {
+                diagnostic::overlay_fixture(arg.as_deref() == Some("--restoration-fixture"))
+            } else if arg.as_deref() == Some("--overlay-targets") {
+                diagnostic::overlay_targets()
+            } else {
+                diagnostic::movement_fixture()
+            };
+            if let Err(e) = result {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
-        } else if matches!(arg.as_deref(), Some("--diagnose" | "--smoke")) {
-            if let Err(e) = diagnostic::run(arg.as_deref() == Some("--smoke")) {
+        } else if matches!(
+            arg.as_deref(),
+            Some("--diagnose" | "--smoke" | "--diagnose-badges")
+        ) {
+            let result = if arg.as_deref() == Some("--diagnose-badges") {
+                diagnostic::badges()
+            } else {
+                diagnostic::run(arg.as_deref() == Some("--smoke"))
+            };
+            if let Err(e) = result {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
@@ -39,6 +69,9 @@ fn main() {
                         | "--disconnected-smoke"
                         | "--rename-smoke"
                         | "--design-smoke"
+                        | "--cleanup-smoke"
+                        | "--frame-smoke"
+                        | "--pointer-smoke"
                 )
             ) && std::env::var_os("APPDOCK_DATA_DIR").is_none()
             {

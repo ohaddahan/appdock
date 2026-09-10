@@ -6,6 +6,52 @@ use crate::{
 };
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWorkspace};
 use objc2_foundation::MainThreadMarker;
+/// Read only app names and Dock badge metadata for the user's messaging apps.
+pub fn badges() -> Result<()> {
+    let m = MainThreadMarker::new().ok_or("Main thread required")?;
+    let _ = NSApplication::sharedApplication(m);
+    let dock = objc2_app_kit::NSRunningApplication::runningApplicationsWithBundleIdentifier(
+        &objc2_foundation::NSString::from_str("com.apple.dock"),
+    )
+    .firstObject()
+    .ok_or("Dock unavailable")?
+    .processIdentifier();
+    let apps: Vec<_> = NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .filter_map(|app| {
+            let name = app.localizedName()?.to_string();
+            if !["Discord", "Telegram Lite", "WhatsApp", "Spotify"].contains(&name.as_str()) {
+                return None;
+            }
+            let path = app
+                .bundleURL()
+                .or_else(|| app.executableURL())?
+                .path()?
+                .to_string();
+            Some((name, path))
+        })
+        .collect();
+    std::thread::spawn(move || {
+        let targets = apps
+            .iter()
+            .enumerate()
+            .map(|(i, (_, path))| (i as u64 + 1, path.clone()))
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let badges = crate::macos::read_dock_badges(dock, &targets)?;
+        for (i, (name, _)) in apps.iter().enumerate() {
+            println!("{name}: Dock badge {:?}", badges.get(&(i as u64 + 1)));
+        }
+        println!(
+            "Dock badge scan completed in {} ms",
+            started.elapsed().as_millis()
+        );
+        Ok(())
+    })
+    .join()
+    .map_err(|_| "Badge diagnostic panicked".to_string())?
+}
 pub fn run(smoke: bool) -> Result<()> {
     let m = MainThreadMarker::new().ok_or("Main thread required")?;
     let _ = NSApplication::sharedApplication(m);
@@ -178,4 +224,262 @@ pub fn movement_fixture() -> Result<()> {
     let _ = child.kill();
     let _ = child.wait();
     outcome
+}
+
+/// Two disposable same-process, same-title windows exercise the real AX backend
+/// and main-thread cover. No existing user windows are discovered or attached.
+pub fn overlay_targets() -> Result<()> {
+    use objc2::MainThreadOnly;
+    use objc2_app_kit::*;
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    let m = MainThreadMarker::new().ok_or("Main thread required")?;
+    let app = NSApplication::sharedApplication(m);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    let mut windows = Vec::new();
+    for offset in [0., 80.] {
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(m),
+                NSRect::new(NSPoint::new(140. + offset, 180.), NSSize::new(800., 500.)),
+                NSWindowStyleMask::Titled
+                    | NSWindowStyleMask::Resizable
+                    | NSWindowStyleMask::Miniaturizable,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        unsafe {
+            window.setReleasedWhenClosed(false);
+            window.setContentMinSize(NSSize::new(600., 400.));
+        }
+        window.setTitle(&NSString::from_str("Disposable duplicate title"));
+        window.makeKeyAndOrderFront(None);
+        windows.push(window);
+    }
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+    app.run();
+    drop(windows);
+    Ok(())
+}
+
+pub fn overlay_fixture(constrained_restore: bool) -> Result<()> {
+    use objc2::MainThreadOnly;
+    use objc2_app_kit::*;
+    use objc2_foundation::{NSDate, NSPoint, NSRect, NSSize, NSString};
+    use std::{
+        process::{Command, Stdio},
+        sync::mpsc,
+        time::Duration,
+    };
+    let m = MainThreadMarker::new().ok_or("Main thread required")?;
+    let app = NSApplication::sharedApplication(m);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    app.finishLaunching();
+    let controls = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            NSWindow::alloc(m),
+            NSRect::new(NSPoint::new(120., 760.), NSSize::new(500., 64.)),
+            NSWindowStyleMask::Titled,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    unsafe {
+        controls.setReleasedWhenClosed(false);
+    }
+    controls.setTitle(&NSString::from_str("Disposable AppDock controls"));
+    let backdrop = crate::backdrop::Backdrop::new(m);
+    let primary = NSScreen::screens(m)
+        .firstObject()
+        .ok_or("No screen")?
+        .frame()
+        .size
+        .height;
+    // AX calls to another process are dispatched to its main thread. Calling
+    // our own AppKit AX setters from the backend thread would violate AppKit.
+    let mut child = Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
+        .arg("--overlay-targets")
+        .stdout(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let pid = child.id() as i32;
+    let (tx, rx) = mpsc::channel::<(u32, Vec<Rect>, Option<u32>)>();
+    let (ack_tx, ack_rx) = mpsc::channel::<Result<()>>();
+    let worker = std::thread::spawn(move || -> Result<()> {
+        let mut backend = MacBackend::new();
+        backend.apps = vec![App {
+            pid,
+            name: "Fixture".into(),
+            bundle: "dev.appdock.fixture".into(),
+        }];
+        let mut targets = Vec::new();
+        for _ in 0..50 {
+            targets = backend.discover()?;
+            if targets.len() == 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if targets.len() != 2 || targets.iter().any(|w| !w.eligible) {
+            return Err(format!(
+                "Expected two eligible disposable windows, found {}",
+                targets.len()
+            ));
+        }
+        let mut engine = Engine::new(backend, Workspace::default());
+        let mut ids = Vec::new();
+        for target in &targets {
+            ids.push(engine.attach(None, target)?);
+        }
+        let originals: Vec<_> = engine
+            .live
+            .values()
+            .map(|a| (a.window, a.original))
+            .collect();
+        let exercise = (|| {
+            for cycle in 0..12 {
+                let id = ids[cycle % 2];
+                engine.switch(id)?;
+                if cycle == 5 {
+                    engine.follow_workspace(Rect {
+                        x: 340.,
+                        ..engine.area
+                    })?;
+                }
+                if cycle == 7 {
+                    engine.resize(Rect {
+                        width: 1100.,
+                        height: 680.,
+                        ..engine.area
+                    })?;
+                }
+                let selected = engine
+                    .backend
+                    .window_number(engine.live[&id].window)
+                    .ok_or("Missing selected stacking anchor")?;
+                let other = engine
+                    .backend
+                    .window_number(engine.live[&ids[(cycle + 1) % 2]].window);
+                let frames = engine
+                    .live
+                    .values()
+                    .filter(|a| a.docked)
+                    .map(|a| a.expected.frame)
+                    .collect();
+                tx.send((selected, frames, other))
+                    .map_err(|e| e.to_string())?;
+                ack_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|e| e.to_string())??;
+                for a in engine.live.values() {
+                    if engine.backend.state(a.window)?.minimized {
+                        return Err("Switch minimized a fixture window".into());
+                    }
+                }
+            }
+            Ok(())
+        })();
+        if constrained_restore {
+            // Deliberately request a saved frame the native app cannot accept.
+            for a in engine.live.values_mut() {
+                a.original.frame.width = 100.;
+                a.original.frame.height = 100.;
+            }
+        }
+        let restored = engine.restore_all().and_then(|_| {
+            if !engine.workspace.tabs.is_empty()
+                || !engine.live.is_empty()
+                || !engine.released.is_empty()
+            {
+                return Err("Restoration left stale tabs or recovery snapshots".into());
+            }
+            if constrained_restore {
+                if engine.restoration_notes.len() != originals.len() {
+                    return Err("Expected nonblocking notes for native geometry constraints".into());
+                }
+                for (id, before) in &originals {
+                    engine.backend.restore(*id, *before)?;
+                }
+            }
+            for (id, before) in originals {
+                let after = engine.backend.state(id)?;
+                if !after.frame.near(before.frame) || after.minimized != before.minimized {
+                    return Err("Overlay fixture original-state restoration failed".into());
+                }
+            }
+            Ok(())
+        });
+        exercise.and(restored)
+    });
+    let pump = |seconds| {
+        let until = NSDate::dateWithTimeIntervalSinceNow(seconds);
+        while until.timeIntervalSinceNow() > 0. {
+            if let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                NSEventMask::Any,
+                Some(&until),
+                unsafe { objc2_foundation::NSDefaultRunLoopMode },
+                true,
+            ) {
+                app.sendEvent(&event);
+            }
+        }
+    };
+    let mut presentations = 0;
+    while !worker.is_finished() {
+        pump(0.01);
+        if let Ok((selected, frames, other)) = rx.try_recv() {
+            backdrop.place(selected, None, &frames, primary);
+            presentations += 1;
+            let test_controls = presentations == 4 || presentations == 10;
+            if test_controls {
+                #[allow(deprecated)]
+                app.activateIgnoringOtherApps(true);
+                controls.makeKeyAndOrderFront(None);
+                pump(0.1);
+                // Same callback-safe shared handle as the UI's key-window delegate.
+                backdrop.clone().keep_below_selected();
+            }
+            pump(0.05);
+            let result = (|| {
+                let stack = crate::window_tracking::stack().ok_or("No WindowServer stack")?;
+                if test_controls && !controls.isKeyWindow() {
+                    return Err("Backdrop stole keyboard focus from the controls".into());
+                }
+                let position = |id| {
+                    stack
+                        .iter()
+                        .position(|w| w.number == id)
+                        .ok_or_else(|| format!("Window {id} missing from stack (selected {selected}, cover {}, other {other:?})", backdrop.number()))
+                };
+                let active = position(selected)?;
+                let cover = position(backdrop.number())?;
+                if active >= cover || other.is_some_and(|id| position(id).is_ok_and(|p| p <= cover))
+                {
+                    return Err(format!(
+                        "Incorrect overlay order: selected {selected} at {active}, cover {} at {cover}, other {other:?}",
+                        backdrop.number()
+                    ));
+                }
+                Ok(())
+            })();
+            let _ = ack_tx.send(result);
+        }
+    }
+    backdrop.hide();
+    controls.orderOut(None);
+    let _ = child.kill();
+    let _ = child.wait();
+    worker
+        .join()
+        .map_err(|_| "Overlay fixture worker panicked")??;
+    println!(
+        "Native overlay fixture passed: 12 same-app duplicate-title switches, active above opaque cover above inactive, controls keep keyboard focus, no minimization, movement/resizing and original-state restoration"
+    );
+    if constrained_restore {
+        println!(
+            "Native constrained-restoration regression passed: unavailable original geometry did not block close; tabs and recovery state cleared"
+        );
+    }
+    Ok(())
 }

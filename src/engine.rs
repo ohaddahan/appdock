@@ -6,6 +6,7 @@ pub struct Attachment {
     pub window: WindowId,
     pub original: WindowState,
     pub expected: WindowState,
+    pub docked: bool,
 }
 pub struct Engine<B: WindowBackend> {
     pub backend: B,
@@ -16,6 +17,7 @@ pub struct Engine<B: WindowBackend> {
     pub paused: Option<String>,
     pub area: Rect,
     pub pointer_down: bool,
+    pub restoration_notes: Vec<String>,
 }
 impl<B: WindowBackend> Engine<B> {
     pub fn new(backend: B, workspace: Workspace) -> Self {
@@ -29,6 +31,7 @@ impl<B: WindowBackend> Engine<B> {
             paused: None,
             area,
             pointer_down: false,
+            restoration_notes: vec![],
         }
     }
     pub fn attach(&mut self, tab: Option<TabId>, window: &WindowInfo) -> Result<TabId> {
@@ -80,7 +83,7 @@ impl<B: WindowBackend> Engine<B> {
         } else {
             self.workspace.tabs.push(SavedTab {
                 id,
-                name: format!("{} — {}", window.app, window.title),
+                name: window.app.clone(),
                 identity: window.identity.clone(),
             });
         }
@@ -93,6 +96,7 @@ impl<B: WindowBackend> Engine<B> {
                 window: window.id,
                 original,
                 expected: original,
+                docked: false,
             },
         );
         self.backend.watch(window.id, true);
@@ -122,9 +126,24 @@ impl<B: WindowBackend> Engine<B> {
             self.paused = Some("Fullscreen or dialog is active".into());
             return Err("Close the dialog or leave fullscreen, then Resume.".into());
         }
-        // Prepare the next window before hiding the previous one. Roll back on failure.
+        // Validate the previous window before changing focus or geometry.
+        if let Some(old) = self
+            .selected
+            .filter(|old| *old != id)
+            .and_then(|old| self.live.get(&old))
+        {
+            let state = self.backend.state(old.window)?;
+            if state.modal || state.fullscreen {
+                self.paused = Some("Previous window has a dialog or is fullscreen".into());
+                return Err("Close the dialog or leave fullscreen, then Resume.".into());
+            }
+        }
+        // The UI orders an opaque backdrop below this exact focused window.
+        // Inactive tabs remain open; only an already minimized target needs restoring.
         let prepared: Result<Rect> = (|| {
-            self.backend.minimize(next.window, false)?;
+            if before.minimized {
+                self.backend.minimize(next.window, false)?;
+            }
             let frame = self.backend.set_frame(next.window, self.area)?;
             if !current() {
                 return Err("Superseded by a newer selection".into());
@@ -136,46 +155,22 @@ impl<B: WindowBackend> Engine<B> {
             Ok(f) => f,
             Err(e) => {
                 let rollback = self.backend.restore(next.window, before);
+                if let Some(old) = self.selected.and_then(|id| self.live.get(&id)) {
+                    let _ = self.backend.focus(old.window);
+                }
                 return Err(format!("Switch failed: {e}; rollback: {rollback:?}"));
             }
         };
         if !current() {
             self.backend.restore(next.window, before)?;
-            return Ok(());
-        }
-        if let Some(old) = self
-            .selected
-            .filter(|old| *old != id)
-            .and_then(|old| self.live.get(&old))
-            .cloned()
-        {
-            let old_state = match self.backend.state(old.window) {
-                Ok(s) => s,
-                Err(e) => {
-                    let rollback = self.backend.restore(next.window, before);
-                    return Err(format!(
-                        "Previous window unavailable: {e}; rollback: {rollback:?}"
-                    ));
-                }
-            };
-            if old_state.modal || old_state.fullscreen {
-                let _ = self.backend.restore(next.window, before);
-                self.paused = Some("Previous window has a dialog or is fullscreen".into());
-                return Err("Previous window cannot be hidden safely.".into());
-            }
-            if let Err(e) = self.backend.minimize(old.window, true) {
-                let rollback = self.backend.restore(next.window, before);
+            if let Some(old) = self.selected.and_then(|id| self.live.get(&id)) {
                 let _ = self.backend.focus(old.window);
-                return Err(format!(
-                    "Could not hide previous window: {e}; rollback: {rollback:?}"
-                ));
             }
-            if let Some(a) = self.live.values_mut().find(|a| a.window == old.window) {
-                a.expected.minimized = true;
-            }
+            return Ok(());
         }
         self.selected = Some(id);
         if let Some(a) = self.live.get_mut(&id) {
+            a.docked = true;
             a.expected = WindowState {
                 frame,
                 minimized: false,
@@ -189,7 +184,7 @@ impl<B: WindowBackend> Engine<B> {
         if self.paused.is_some() {
             return Ok(());
         }
-        if let Some(a) = self.selected.and_then(|id| self.live.get_mut(&id)) {
+        for a in self.live.values_mut().filter(|a| a.docked) {
             let state = self.backend.state(a.window)?;
             if state.fullscreen || state.modal {
                 self.paused = Some("Fullscreen or dialog is active".into());
@@ -197,7 +192,7 @@ impl<B: WindowBackend> Engine<B> {
             }
             if !state.frame.near(a.expected.frame) || state.minimized != a.expected.minimized {
                 // The observer restores the target after the user releases the mouse.
-                return Ok(());
+                continue;
             }
             a.expected.frame = self.backend.set_frame(a.window, area)?;
         }
@@ -216,9 +211,10 @@ impl<B: WindowBackend> Engine<B> {
     }
     pub fn restore_released(&mut self, id: TabId) -> Result<()> {
         if let Some(a) = self.released.get(&id) {
-            let result = self.backend.restore(a.window, a.original);
+            let result = self.backend.restore_for_release(a.window, a.original);
             self.backend.watch(a.window, false);
-            result.map_err(|e|format!("Window released; original state could not be restored: {e}. Use AppDock → Retry restoration."))?;
+            let restored = result.map_err(|e|format!("Window released; original state could not be restored: {e}. Use AppDock → Retry restoration."))?;
+            self.record_restoration(id, restored);
             self.released.remove(&id);
         }
         Ok(())
@@ -248,7 +244,7 @@ impl<B: WindowBackend> Engine<B> {
         if self.paused.is_some() {
             return Ok(());
         }
-        if let Some(a) = self.selected.and_then(|id| self.live.get_mut(&id)) {
+        for a in self.live.values_mut().filter(|a| a.docked) {
             // Position-only AX writes preserve app-enforced size limits and avoid
             // resize IPC, settling sleeps, and repeated full-state reads per pixel.
             self.backend.move_window(a.window, area.x, area.y)?;
@@ -260,16 +256,23 @@ impl<B: WindowBackend> Engine<B> {
     pub fn restore_all(&mut self) -> Result<()> {
         let mut errors: Vec<_> = self.retry_released().err().into_iter().collect();
         let mut restored = vec![];
+        let mut outcomes = vec![];
         for (&id, a) in &self.live {
-            if let Err(e) = self.backend.restore(a.window, a.original) {
-                errors.push(format!("Tab {id}: {e}"));
-            } else {
-                self.backend.watch(a.window, false);
-                restored.push(id);
+            match self.backend.restore_for_release(a.window, a.original) {
+                Err(e) => errors.push(format!("Tab {id}: {e}")),
+                Ok(outcome) => {
+                    self.backend.watch(a.window, false);
+                    restored.push(id);
+                    outcomes.push((id, outcome));
+                }
             }
+        }
+        for (id, outcome) in outcomes {
+            self.record_restoration(id, outcome);
         }
         for id in restored {
             self.live.remove(&id);
+            self.workspace.tabs.retain(|t| t.id != id);
             if self.selected == Some(id) {
                 self.selected = None;
             }
@@ -280,6 +283,13 @@ impl<B: WindowBackend> Engine<B> {
             Ok(())
         } else {
             Err(errors.join("\n"))
+        }
+    }
+    fn record_restoration(&mut self, id: TabId, outcome: Restoration) {
+        if let Restoration::Adjusted { requested, actual } = outcome {
+            self.restoration_notes.push(format!(
+                "Tab {id} released at the available window size and position. Original: {requested:?}; actual: {actual:?}"
+            ));
         }
     }
     pub fn observe(&mut self) {
@@ -297,6 +307,8 @@ impl<B: WindowBackend> Engine<B> {
                         .collect();
                     for id in ids {
                         self.live.remove(&id);
+                        self.workspace.tabs.retain(|t| t.id != id);
+                        self.backend.watch(w, false);
                         if self.selected == Some(id) {
                             self.selected = None;
                         }
@@ -322,11 +334,7 @@ impl<B: WindowBackend> Engine<B> {
                             {
                                 // Movement does not release ownership. Wait until the mouse is
                                 // released, then put the selected window back in the workspace.
-                                let target = if self.selected == Some(id) {
-                                    self.area
-                                } else {
-                                    expected.frame
-                                };
+                                let target = if a.docked { self.area } else { expected.frame };
                                 match self.backend.set_frame(w, target) {
                                     Ok(frame) => {
                                         self.live.get_mut(&id).unwrap().expected.frame = frame
@@ -355,23 +363,6 @@ impl<B: WindowBackend> Engine<B> {
         }
         Ok(())
     }
-    pub fn reconnect(&mut self, windows: &[WindowInfo]) {
-        let saved = self.workspace.tabs.clone();
-        for tab in &saved {
-            if saved
-                .iter()
-                .filter(|other| other.identity == tab.identity)
-                .count()
-                == 1
-                && !self.live.contains_key(&tab.id)
-                && let Some(id) = reconnect(tab, windows)
-                && let Some(w) = windows.iter().find(|w| w.id == id)
-            {
-                let _ = self.attach(Some(tab.id), w);
-            }
-        }
-        // Reconnection binds handles only; the user explicitly selects a tab to dock it.
-    }
 }
 
 #[cfg(test)]
@@ -385,7 +376,11 @@ mod tests {
         resizes: usize,
         fail_focus: bool,
         fail_minimize: bool,
+        minimize_calls: Vec<(WindowId, bool)>,
+        focused: Option<WindowId>,
         events: Vec<BackendEvent>,
+        minimum_width: Option<f64>,
+        fail_resize: bool,
     }
     impl WindowBackend for Fake {
         fn same_window(&self, a: WindowId, b: WindowId) -> bool {
@@ -407,22 +402,30 @@ mod tests {
             state.frame.y = y;
             Ok(())
         }
-        fn set_frame(&mut self, id: WindowId, f: Rect) -> Result<Rect> {
+        fn set_frame(&mut self, id: WindowId, mut f: Rect) -> Result<Rect> {
             self.resizes += 1;
+            if self.fail_resize {
+                return Err("Resize denied".into());
+            }
+            if let Some(minimum) = self.minimum_width {
+                f.width = f.width.max(minimum);
+            }
             self.states.get_mut(&id).unwrap().frame = f;
             Ok(f)
         }
         fn minimize(&mut self, id: WindowId, v: bool) -> Result<()> {
+            self.minimize_calls.push((id, v));
             if v && self.fail_minimize {
                 return Err("denied".into());
             }
             self.states.get_mut(&id).unwrap().minimized = v;
             Ok(())
         }
-        fn focus(&mut self, _: WindowId) -> Result<()> {
+        fn focus(&mut self, id: WindowId) -> Result<()> {
             if self.fail_focus {
                 Err("timeout".into())
             } else {
+                self.focused = Some(id);
                 Ok(())
             }
         }
@@ -461,13 +464,16 @@ mod tests {
         e
     }
     #[test]
-    fn switching_duplicate_titles_hides_only_previous_handle() {
+    fn switching_duplicate_titles_focuses_exact_handle_without_minimizing() {
         let mut e = fixture();
+        assert!(e.workspace.tabs.iter().all(|tab| tab.name == "same"));
         e.switch(1).unwrap();
         e.switch(2).unwrap();
-        assert!(e.backend.states[&1].minimized);
+        assert!(!e.backend.states[&1].minimized);
         assert!(!e.backend.states[&2].minimized);
         assert_eq!(e.selected, Some(2));
+        assert_eq!(e.backend.focused, Some(2));
+        assert!(e.backend.minimize_calls.is_empty());
     }
     #[test]
     fn focus_failure_retains_previous_selection() {
@@ -479,15 +485,56 @@ mod tests {
         assert!(!e.backend.states[&1].minimized);
     }
     #[test]
-    fn minimize_failure_rolls_back_next_geometry() {
+    fn switching_does_not_require_minimizing_previous_window() {
         let mut e = fixture();
         e.switch(1).unwrap();
-        let before = e.backend.states[&2];
         e.area.x = 400.;
         e.backend.fail_minimize = true;
+        e.switch(2).unwrap();
+        assert_eq!(e.backend.states[&2].frame, e.area);
+        assert_eq!(e.selected, Some(2));
+        assert!(e.backend.minimize_calls.is_empty());
+    }
+    #[test]
+    fn initially_minimized_target_is_restored_once_then_stays_open() {
+        let mut e = fixture();
+        e.backend.states.get_mut(&2).unwrap().minimized = true;
+        e.switch(2).unwrap();
+        e.switch(1).unwrap();
+        e.switch(2).unwrap();
+        assert_eq!(e.backend.minimize_calls, vec![(2, false)]);
+    }
+    #[test]
+    fn inactive_tabs_follow_workspace_but_unselected_attachments_do_not() {
+        let mut e = fixture();
+        let original = e.backend.states[&2];
+        e.switch(1).unwrap();
+        e.follow_workspace(Rect { x: 300., ..e.area }).unwrap();
+        assert_eq!(e.backend.states[&2], original);
+        e.switch(2).unwrap();
+        e.follow_workspace(Rect { x: -400., ..e.area }).unwrap();
+        assert!(
+            e.backend
+                .states
+                .values()
+                .all(|s| s.frame.x == -400. && !s.minimized)
+        );
+        e.resize(Rect {
+            width: 1200.,
+            ..e.area
+        })
+        .unwrap();
+        assert!(e.backend.states.values().all(|s| s.frame == e.area));
+    }
+    #[test]
+    fn previous_dialog_blocks_switch_before_any_window_changes() {
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        e.backend.states.get_mut(&1).unwrap().modal = true;
+        let before = e.backend.states.clone();
         assert!(e.switch(2).is_err());
-        assert_eq!(e.backend.states[&2], before);
-        assert_eq!(e.selected, Some(1));
+        assert_eq!(e.backend.states, before);
+        assert_eq!(e.backend.focused, Some(1));
     }
     #[test]
     fn release_restores_original_state() {
@@ -500,13 +547,16 @@ mod tests {
         assert!(!e.live.contains_key(&1));
     }
     #[test]
-    fn closed_target_keeps_disconnected_tab() {
+    fn confirmed_closed_target_removes_its_tab() {
         let mut e = fixture();
         e.switch(1).unwrap();
         e.backend.events.push(BackendEvent::Closed(1));
         e.observe();
         assert!(!e.live.contains_key(&1));
-        assert_eq!(e.workspace.tabs.len(), 2);
+        assert_eq!(
+            e.workspace.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![2]
+        );
         assert_eq!(e.selected, None);
     }
     #[test]
@@ -537,6 +587,58 @@ mod tests {
         e.restore_all().unwrap();
         assert!(e.backend.states.values().all(|s| !s.minimized));
         assert!(e.live.is_empty());
+        assert!(e.workspace.tabs.is_empty());
+    }
+    #[test]
+    fn close_accepts_constrained_geometry_and_restores_minimized_state() {
+        let mut e = fixture();
+        e.area.x += 200.;
+        e.switch(1).unwrap();
+        e.switch(2).unwrap();
+        e.live.get_mut(&1).unwrap().original.minimized = true;
+        e.backend.minimum_width = Some(1200.);
+        e.restore_all().unwrap();
+        assert!(e.live.is_empty());
+        assert!(e.released.is_empty());
+        assert!(e.workspace.tabs.is_empty());
+        assert_eq!(e.restoration_notes.len(), 2);
+        assert!(e.backend.states[&1].minimized);
+        assert_eq!(e.backend.states[&1].frame.width, 1200.);
+    }
+    #[test]
+    fn release_accepts_constrained_geometry_but_rollback_remains_strict() {
+        let mut e = fixture();
+        let original = e.backend.states[&1];
+        e.area.x += 200.;
+        e.switch(1).unwrap();
+        e.backend.minimum_width = Some(1200.);
+        assert!(e.backend.restore(1, original).is_err());
+        e.release(1).unwrap();
+        assert!(!e.live.contains_key(&1));
+        assert!(!e.released.contains_key(&1));
+        assert_eq!(e.restoration_notes.len(), 1);
+    }
+    #[test]
+    fn actual_window_control_failure_keeps_retry_snapshot() {
+        let mut e = fixture();
+        e.area.x += 200.;
+        e.switch(1).unwrap();
+        e.backend.fail_resize = true;
+        assert!(e.restore_all().is_err());
+        assert!(e.live.contains_key(&1));
+        assert!(e.workspace.tabs.iter().any(|t| t.id == 1));
+        assert!(e.restoration_notes.is_empty());
+        e.backend.fail_resize = false;
+        e.restore_all().unwrap();
+        assert!(e.workspace.tabs.is_empty());
+    }
+    #[test]
+    fn unchanged_window_needs_no_restore_writes() {
+        let mut e = fixture();
+        e.backend.fail_resize = true;
+        e.restore_all().unwrap();
+        assert_eq!(e.backend.resizes, 0);
+        assert!(e.backend.minimize_calls.is_empty());
     }
     #[test]
     fn stale_switch_does_not_touch_windows() {
@@ -594,24 +696,6 @@ mod tests {
         assert!(e.release(1).is_err());
         assert!(!e.live.contains_key(&1));
         assert!(e.released.contains_key(&1));
-    }
-    #[test]
-    fn duplicate_saved_identities_require_explicit_selection() {
-        let mut e = fixture();
-        e.live.clear();
-        for t in &mut e.workspace.tabs {
-            t.identity.identifier = Some("same-id".into());
-        }
-        let w = WindowInfo {
-            id: 1,
-            pid: 10,
-            app: "same".into(),
-            title: "same".into(),
-            identity: e.workspace.tabs[0].identity.clone(),
-            eligible: true,
-        };
-        e.reconnect(&[w]);
-        assert!(e.live.is_empty());
     }
     #[test]
     fn resize_defers_manual_move_correction_to_the_observer() {

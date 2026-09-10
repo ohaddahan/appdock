@@ -4,6 +4,23 @@ pub type WindowId = u64;
 pub type TabId = u64;
 pub type Result<T> = std::result::Result<T, String>;
 
+/// Compact presentation of an app-wide Dock badge. Unknown text is a dot,
+/// never a guessed unread count. Empty labels and an explicit zero are clear.
+pub fn badge_text(label: &str) -> Option<String> {
+    if label.is_empty() {
+        return None;
+    }
+    let label = label.trim();
+    let more = label.ends_with('+');
+    match label.strip_suffix('+').unwrap_or(label).parse::<u64>() {
+        Ok(0) if !more => None,
+        Ok(n) if n > 99 => Some("99+".into()),
+        Ok(n) if more => Some(format!("{n}+")),
+        Ok(n) => Some(n.to_string()),
+        Err(_) => Some("•".into()),
+    }
+}
+
 /// Global desktop points, with the origin at the primary display's top left (AX).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rect {
@@ -91,6 +108,11 @@ pub struct WindowState {
     pub fullscreen: bool,
     pub modal: bool,
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Restoration {
+    Exact,
+    Adjusted { requested: Rect, actual: Rect },
+}
 #[derive(Clone, Debug)]
 pub enum BackendEvent {
     Closed(WindowId),
@@ -115,39 +137,67 @@ pub trait WindowBackend {
     fn events(&mut self) -> Vec<BackendEvent>;
     fn watch(&mut self, _id: WindowId, _enabled: bool) {}
     fn restore(&mut self, id: WindowId, state: WindowState) -> Result<()> {
+        match self.restore_for_release(id, state)? {
+            Restoration::Exact => Ok(()),
+            Restoration::Adjusted { requested, actual } => Err(format!(
+                "Window geometry differs after rollback: requested {requested:?}, actual {actual:?}"
+            )),
+        }
+    }
+    /// Release accepts the frame the app/desktop permits. An exact-coordinate
+    /// mismatch must not trap the manager in a retry-close loop.
+    fn restore_for_release(&mut self, id: WindowId, state: WindowState) -> Result<Restoration> {
         let current = self.state(id)?;
         if current.fullscreen || current.modal {
             return Err("Leave fullscreen and close dialogs before restoring this window".into());
         }
-        self.minimize(id, false)?;
-        let actual = self.set_frame(id, state.frame)?;
-        self.minimize(id, state.minimized)?;
-        if !actual.near(state.frame) {
-            return Err("Window could not restore its original geometry on this desktop".into());
+        if current.frame.near(state.frame) && current.minimized == state.minimized {
+            return Ok(Restoration::Exact);
         }
-        Ok(())
+        if current.minimized {
+            self.minimize(id, false)?;
+        }
+        self.set_frame(id, state.frame)?;
+        if state.minimized {
+            self.minimize(id, true)?;
+        }
+        let actual = self.state(id)?;
+        if actual.minimized != state.minimized
+            || actual.fullscreen
+            || actual.modal
+            || !actual.frame.valid()
+        {
+            return Err(
+                "Window did not accept its original state; retry after resolving the interruption"
+                    .into(),
+            );
+        }
+        Ok(if actual.frame.near(state.frame) {
+            Restoration::Exact
+        } else {
+            Restoration::Adjusted {
+                requested: state.frame,
+                actual: actual.frame,
+            }
+        })
     }
 }
 
-pub fn reconnect(tab: &SavedTab, windows: &[WindowInfo]) -> Option<WindowId> {
-    let identifier = tab
-        .identity
-        .identifier
-        .as_deref()
-        .filter(|s| !s.is_empty())?;
-    let matches: Vec<_> = windows
-        .iter()
-        .filter(|w| {
-            w.eligible
-                && w.identity.bundle == tab.identity.bundle
-                && w.identity.identifier.as_deref() == Some(identifier)
-        })
-        .collect();
-    (matches.len() == 1).then(|| matches[0].id)
-}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dock_badges_keep_counts_separate_from_unknown_status() {
+        assert_eq!(badge_text("7").as_deref(), Some("7"));
+        assert_eq!(badge_text("100").as_deref(), Some("99+"));
+        assert_eq!(badge_text("99+").as_deref(), Some("99+"));
+        assert_eq!(badge_text("7+").as_deref(), Some("7+"));
+        assert_eq!(badge_text("•").as_deref(), Some("•"));
+        assert_eq!(badge_text("attention").as_deref(), Some("•"));
+        assert_eq!(badge_text(" ").as_deref(), Some("•"));
+        assert_eq!(badge_text("0"), None);
+        assert_eq!(badge_text(""), None);
+    }
     #[test]
     fn cocoa_conversion_handles_displays_above_and_left() {
         assert_eq!(
@@ -158,43 +208,6 @@ mod tests {
                 width: 700.0,
                 height: 600.0
             }
-        );
-    }
-    #[test]
-    fn titles_cannot_reconnect_windows() {
-        let tab = SavedTab {
-            id: 1,
-            name: "Same title".into(),
-            identity: Identity {
-                bundle: "app".into(),
-                identifier: None,
-            },
-        };
-        assert_eq!(reconnect(&tab, &[]), None);
-    }
-    #[test]
-    fn duplicate_identifiers_are_ambiguous() {
-        let identity = Identity {
-            bundle: "app".into(),
-            identifier: Some("window".into()),
-        };
-        let tab = SavedTab {
-            id: 1,
-            name: "A".into(),
-            identity: identity.clone(),
-        };
-        let w = WindowInfo {
-            id: 2,
-            pid: 3,
-            app: "A".into(),
-            title: "B".into(),
-            identity,
-            eligible: true,
-        };
-        assert_eq!(reconnect(&tab, std::slice::from_ref(&w)), Some(2));
-        assert_eq!(
-            reconnect(&tab, &[w.clone(), WindowInfo { id: 4, ..w }]),
-            None
         );
     }
 }

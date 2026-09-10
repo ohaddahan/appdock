@@ -1,11 +1,17 @@
 //! All Accessibility IPC stays on the worker thread; no AppKit objects cross it.
 use crate::model::*;
 use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
-use objc2_core_foundation::{CFArray, CFBoolean, CFRetained, CFString, CFType};
+use objc2_core_foundation::{
+    CFArray, CFBoolean, CFRetained, CFString, CFType, CFURL, CFURLPathStyle,
+};
 use objc2_core_foundation::{CGPoint, CGSize};
 use std::{
     collections::{HashMap, HashSet},
     ptr::NonNull,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 #[derive(Clone, Debug)]
 pub struct App {
@@ -17,12 +23,14 @@ struct Entry {
     element: CFRetained<AXUIElement>,
     app: CFRetained<AXUIElement>,
     info: WindowInfo,
+    number: Option<u32>,
 }
 pub struct MacBackend {
     pub apps: Vec<App>,
     entries: HashMap<WindowId, Entry>,
     next: WindowId,
     watched: HashSet<WindowId>,
+    pub focus_suspended: Arc<AtomicBool>,
 }
 fn check(e: AXError) -> Result<()> {
     if e == AXError::Success {
@@ -91,6 +99,79 @@ fn array(e: &AXUIElement, name: &str) -> Result<Vec<CFRetained<AXUIElement>>> {
         .filter_map(|v| v.downcast::<AXUIElement>().ok())
         .collect())
 }
+/// Read badge metadata exposed by the Dock, matching exact application paths.
+/// No notification contents, private APIs, focus changes or app mutations.
+pub fn read_dock_badges(
+    dock_pid: i32,
+    targets: &[(TabId, String)],
+) -> Result<std::collections::BTreeMap<TabId, String>> {
+    let mut badges = std::collections::BTreeMap::new();
+    if targets.is_empty() {
+        return Ok(badges);
+    }
+    if !unsafe { AXIsProcessTrusted() } {
+        return Err("Accessibility unavailable".into());
+    }
+    let root = unsafe { AXUIElement::new_application(dock_pid) };
+    let started = std::time::Instant::now();
+    let mut pending = vec![(root, 0)];
+    let mut visited = 0;
+    while let Some((element, depth)) = pending.pop() {
+        if visited >= 128 || started.elapsed() > std::time::Duration::from_millis(250) {
+            return Err("Dock badge scan timed out".into());
+        }
+        visited += 1;
+        unsafe {
+            check(element.set_messaging_timeout(0.2))?;
+        }
+        if let Some(url) =
+            optional_attr(&element, "AXURL")?.and_then(|v| v.downcast::<CFURL>().ok())
+        {
+            if !url
+                .scheme()
+                .is_some_and(|scheme| scheme.to_string() == "file")
+            {
+                continue;
+            }
+            let Some(path) = url
+                .file_system_path(CFURLPathStyle::CFURLPOSIXPathStyle)
+                .map(|s| s.to_string())
+            else {
+                continue;
+            };
+            let matches: Vec<_> = targets
+                .iter()
+                .filter(|(_, candidate)| {
+                    candidate.trim_end_matches('/') == path.trim_end_matches('/')
+                })
+                .collect();
+            if !matches.is_empty()
+                && let Some(label) = string(&element, "AXStatusLabel")
+                && badge_text(&label).is_some()
+            {
+                let label: String = label.chars().filter(|c| !c.is_control()).take(64).collect();
+                for (id, _) in matches {
+                    badges.insert(*id, label.clone());
+                }
+            }
+        } else if depth < 2
+            && let Some(children) = optional_attr(&element, "AXChildren")?
+        {
+            let children = children
+                .downcast::<CFArray>()
+                .map_err(|_| "Invalid Dock children")?;
+            // AXChildren is an array of Accessibility elements; check each value.
+            let children = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(children) };
+            pending.extend(
+                children
+                    .iter()
+                    .filter_map(|child| child.downcast::<AXUIElement>().ok())
+                    .map(|child| (child, depth + 1)),
+            );
+        }
+    }
+    Ok(badges)
+}
 fn state_of(e: &AXUIElement) -> Result<WindowState> {
     let p = attr(e, "AXPosition")?
         .downcast::<AXValue>()
@@ -139,10 +220,18 @@ impl MacBackend {
             entries: HashMap::new(),
             next: 1,
             watched: HashSet::new(),
+            focus_suspended: Arc::new(AtomicBool::new(false)),
         }
     }
     fn entry(&self, id: WindowId) -> Result<&Entry> {
         self.entries.get(&id).ok_or("Window is disconnected".into())
+    }
+    pub fn window_number(&self, id: WindowId) -> Option<u32> {
+        self.entries.get(&id)?.number
+    }
+    pub fn stacking_identity(&self, id: WindowId) -> Option<(u32, i32)> {
+        let entry = self.entries.get(&id)?;
+        Some((entry.number?, entry.info.pid))
     }
 }
 impl WindowBackend for MacBackend {
@@ -173,7 +262,8 @@ impl WindowBackend for MacBackend {
                 continue;
             };
             for element in windows {
-                if string(&element, "AXSubrole").as_deref() != Some("AXStandardWindow") {
+                let subrole = string(&element, "AXSubrole");
+                if subrole.as_deref() != Some("AXStandardWindow") {
                     continue;
                 }
                 unsafe {
@@ -199,6 +289,7 @@ impl WindowBackend for MacBackend {
                         false
                     }
                 };
+                let state = state_of(&element);
                 let info = WindowInfo {
                     id,
                     pid: app.pid,
@@ -213,14 +304,16 @@ impl WindowBackend for MacBackend {
                         && ["AXPosition", "AXSize", "AXMinimized", "AXMain"]
                             .iter()
                             .all(|n| settable(&element, n))
-                        && state_of(&element).is_ok_and(|s| !s.fullscreen && !s.modal),
+                        && state.is_ok_and(|s| !s.fullscreen && !s.modal),
                 };
+                let number = self.entries.get(&id).and_then(|e| e.number);
                 self.entries.insert(
                     id,
                     Entry {
                         element,
                         app: root.clone(),
                         info: info.clone(),
+                        number,
                     },
                 );
                 result.push(info);
@@ -302,18 +395,39 @@ impl WindowBackend for MacBackend {
         Ok(())
     }
     fn focus(&mut self, id: WindowId) -> Result<()> {
+        if self.focus_suspended.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let e = self.entry(id)?;
         set_bool(&e.app, "AXFrontmost", true)?;
+        if self.focus_suspended.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         unsafe {
             check(e.element.perform_action(&CFString::from_str("AXRaise")))?;
         }
+        if self.focus_suspended.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         set_bool(&e.element, "AXMain", true)?;
         for _ in 0..30 {
+            if self.focus_suspended.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             if boolean(&e.app, "AXFrontmost")?
                 && attr(&e.app, "AXFocusedWindow")?
                     .downcast::<AXUIElement>()
                     .is_ok_and(|focused| *focused == *e.element)
+                && let Some(number) =
+                    crate::window_tracking::focused_number(e.info.pid, self.state(id)?.frame)
+                // AX focus and WindowServer ordering settle independently. Never
+                // replace a known anchor with another tab's still-frontmost window.
+                && e.number.is_none_or(|known| known == number)
+                && !self.entries.iter().any(|(other_id, other)| {
+                    *other_id != id && other.number == Some(number) && other.element != e.element
+                })
             {
+                self.entries.get_mut(&id).unwrap().number = Some(number);
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
@@ -332,21 +446,21 @@ impl WindowBackend for MacBackend {
             return vec![BackendEvent::PermissionLost];
         }
         let mut events = vec![];
+        let mut app_windows = HashMap::new();
         for id in self.watched.iter().copied().collect::<Vec<_>>() {
             let Some(e) = self.entries.get(&id) else {
                 continue;
             };
-            if attr(&e.element, "AXRole").is_ok() {
-                events.push(BackendEvent::Changed(id));
-                continue;
-            }
             if !self.apps.iter().any(|app| app.pid == e.info.pid) {
                 events.push(BackendEvent::Closed(id));
                 continue;
             }
-            // A transient invalid AX object during dragging is not proof that
-            // the window closed. Confirm against the app's current window list.
-            let Ok(windows) = array(&e.app, "AXWindows") else {
+            // Closed AX objects can still return cached attributes. Confirm
+            // membership once per process each poll; failed reads retain handles.
+            let Ok(windows) = app_windows
+                .entry(e.info.pid)
+                .or_insert_with(|| array(&e.app, "AXWindows"))
+            else {
                 events.push(BackendEvent::Changed(id));
                 continue;
             };
@@ -373,7 +487,9 @@ impl WindowBackend for MacBackend {
                 (candidates.len() == 1 && owners == 1).then(|| candidates[0].clone())
             });
             if let Some(element) = replacement {
-                self.entries.get_mut(&id).unwrap().element = element;
+                let entry = self.entries.get_mut(&id).unwrap();
+                entry.element = element;
+                entry.number = None;
                 events.push(BackendEvent::Changed(id));
             } else {
                 events.push(BackendEvent::Closed(id));

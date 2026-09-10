@@ -117,3 +117,104 @@ Checks:
 - [Native styled preview](screenshots/terminator-style-workspace.png) was captured by exact window ID and inspected. It contains dummy disconnected tabs, so Replace window is visible. No user app windows were attached or moved.
 
 The screenshot helper's application-name activation stalled; it was replaced with exact-window capture. The preview and test processes exited normally. Physical keyboard/gesture use against real managed applications remains an interactive check; fixture double-click delivery is synthetic.
+
+## Opaque backdrop switching — 2026-09-10
+
+Tab switching no longer minimizes the previous window. A separate opaque normal-level window covers inactive tabs and stays below the selected app. The controls retain their transparent app area; their key-window callback keeps the backdrop below the app during editing. All docked windows and the backdrop follow workspace movement. Release and exit still restore original geometry and minimized state.
+
+- 33 unit tests passed, including exact-handle switching without any minimization call, restoring an initially minimized target once, inactive-window movement/resizing, dialog preflight, and coverage of larger windows on negative desktop coordinates.
+- Formatting, Clippy with warnings denied, locked builds and local release packaging/signature verification passed.
+- Native `--overlay-fixture` passed twelve switches between two duplicate-title windows in a disposable child process. WindowServer readback confirmed selected window above cover above inactive window. Both targets remained unminimized; movement/resizing and original-state restoration passed. Activating the disposable controls retained keyboard focus while the cover stayed behind the selected target.
+- The fixture caught AX focus settling before WindowServer order. Cached window numbers now wait for their own window to reach the front and cannot be reassigned to another retained AX window.
+- Native surface, inline rename commit/cancel, and tracking-mode checks passed; the tracking fixture recorded 14 samples in 150 ms.
+
+These checks used disposable windows and isolated temporary workspaces. Existing user application windows were not attached, moved, or minimized; physical gestures and switching in Discord/Telegram were not revalidated. The prior switch-minimization failure path is removed. Already running AppDock instances require a restart to use the rebuilt bundle.
+
+## Stale-session cleanup and nonblocking geometry restoration — 2026-09-10
+
+A read-only check of the saved workspace found three tabs, including two Discord entries without AX identifiers. Such entries could not reconnect but remained visible indefinitely. Startup now prunes unreconnectable entries after discovery; periodic discovery and confirmed AXWindows closure checks remove stale tabs and persist the result. Successful release on close removes saved tabs too. Live attachments, incomplete reads and temporarily ineligible matching windows are preserved.
+
+The reported Retry close message originated from the exact-frame comparison in restoration, after geometry operations had succeeded. Release/close now accepts valid adjusted geometry, verifies minimized state and logs the requested/actual frames. True window-control errors retain retry behavior; switch rollback remains strict. This identifies the failing code path, not the exact app constraint or timing behind the user’s original snapshot.
+
+- 39 unit tests passed, including constrained restoration, actual control failure/retry, startup cleanup with label retention, incomplete-read preservation, periodic stale cleanup and avoiding writes for unchanged windows.
+- Native `--restoration-fixture` passed with deliberately unattainable original dimensions on two disposable native windows. Close completed, tabs and recovery snapshots cleared, and final restoration to the fixtures’ actual original geometry passed. The same run also passed the twelve-switch overlay and controls-focus checks.
+- Native `--cleanup-smoke` removed two seeded stale entries from an isolated workspace and verified the empty tab list was persisted.
+- Formatting, Clippy with warnings denied, locked builds, release packaging and signature verification passed.
+
+These tests did not attach or change existing user windows or edit the real saved workspace. The fixes take effect after restarting the rebuilt app.
+
+## Title-bar Add control — 2026-09-10
+
+Moved + from the tab row into a native title-bar accessory and reclaimed the full tab-row width. The existing Add action is retained. A disposable preview was inspected through Orca computer-use and [captured by window ID](screenshots/titlebar-add-window.png); the button is visible at the right of the title bar. The preview contained dummy disconnected tabs. Orca became unavailable during follow-up action verification, so this run does not claim a verified picker-open interaction. Formatting, Clippy, 39 unit tests, locked builds and local release packaging passed.
+
+## Fresh launches and Add App beside the title — 2026-09-10
+
+The earlier startup cleanup intentionally retained reconnectable tabs; `cargo run` reads the same workspace as the bundled app, so Terminal could reappear without being explicitly added. Startup now clears **all** previous-session tabs before worker creation, preserves geometry/shortcuts and persists the empty state. Discovery no longer has any automatic attachment path. This supersedes the earlier selective startup-cleanup behavior.
+
+The control now reads **+ Add App**, has a visible native border/background, and sits immediately beside the AppDock label in a left title-bar accessory. [The native empty-workspace preview](screenshots/titlebar-add-app.png) was captured and inspected. Accessibility Press was followed by fresh window/state reads confirming the “Choose an existing window” picker and focused search field; no Attach action was performed. The disposable preview exited normally.
+
+- 35 tests passed. Obsolete automatic-reconnection tests were replaced by a fresh-launch regression that clears a stable Terminal identity while preserving geometry and shortcuts; unsupported workspace versions remain untouched.
+- Native startup smoke passed with saved Terminal and stale-app tabs: no UI tabs, live attachments, or backend selection, and the cleared file was read back.
+- Formatting, Clippy with warnings denied, locked build, local release packaging and signature verification passed.
+- Existing user app windows and the real workspace file were not modified by these checks. Both the next `cargo run` and the rebuilt bundle use the fresh-session behavior.
+
+## Readable Add App and empty-state layout — 2026-09-10
+
+Add App now uses an explicit white attributed title for normal/alternate states and a lighter bezel background. The idle rename/reorder status is hidden when there are no tabs; permission and error status still appear when relevant. Empty-state instructions sit 24 points below the app-area header and remain anchored to the top during resizing.
+
+- Formatting, Clippy, locked build and 35 existing tests passed; local release bundle rebuilt and signature verified.
+- A disposable empty native workspace was [captured and inspected](screenshots/readable-empty-workspace.png): white Add App text, absent idle status and instructions near the top.
+- Orca preview access timed out. Automatic approval rejected the permission-requesting screenshot preflight; a subsequent read-only check confirmed existing Screen Recording permission (`requested: false`), and capture of the exact disposable window was approved. No permission change or existing app-window manipulation was needed.
+
+## Compact tabs, wrapping frame and rename keyboard ownership — 2026-09-10
+
+New tabs use the app name, with 160-point single-line tabs and truncated custom labels. The idle rename/drag text is removed, and the normal header shrinks to 36 points. Status/actions expand it only when needed. An 8-point AppDock frame surrounds the selected app; the manager grows around app-enforced minimum sizes while keeping the native app window independent.
+
+Renaming explicitly activates AppDock and uses a dedicated field editor supporting Ctrl+A/Cmd+A. An atomic focus gate and worker barrier cancel queued app raises and wait for earlier focus IPC before presenting the editable field. Ending editing releases the gate. Native validation caught synchronous field-editor requests reentering UI state; routing now uses independent Cell/OnceCell state.
+
+- 36 unit tests passed; app-name defaults and cancellation/ordering of pending focus commands are covered.
+- Final native rename smoke passed AppDock activation, Ctrl+A/Cmd+A selection, typed replacement, commit and cancel.
+- Final `--frame-smoke` passed with two disposable native child windows: picker attachment, automatic manager growth from a 400-point-tall workspace to fit the app, rename focus despite Raise requests before/after starting rename, twelve switches, manager movement/resizing, release and close restoration.
+- Surface bitmap checks confirmed a transparent app area with opaque surrounding frame and controls. Tracking-mode smoke recorded 15 WindowServer samples in 150 ms.
+- Formatting, Clippy with warnings denied, locked builds and release packaging/signature verification passed.
+
+These fixtures did not attach or type into existing user applications. Physical keyboard use in the user's Telegram instance was not exercised; native event delivery used disposable windows through the real AppKit/worker paths.
+
+## Inline themed picker and automatic AppDock reveal — 2026-09-10
+
+Replaced the separate native picker panel/dropdown with an inline, palette-matched search/list view. A captured [disposable preview](screenshots/inline-window-picker.png) was inspected: the list, search and actions appear within the AppDock window. The preview contains only disposable child windows.
+
+Direct activation of a cached docked window now reveals AppDock using front ordering without keyboard activation. Matching uses the exact known window number and owner PID; unrelated same-app windows do not qualify. Explicit AppDock minimization is respected.
+
+- 36 unit tests, formatting, Clippy with warnings denied and locked build passed.
+- Final native integration passed picker keyboard ownership, search with no results, Cancel/reopen, selection and attachment of both child windows, rename focus, twelve switches, automatic reveal without keyboard-focus transfer, manager resize, release and close restoration.
+- Initial reveal validation sampled focus too late and observed Chrome foreground; another run lost target focus during a switch. The final fixture checks keyboard ownership immediately around the reveal call and validates WindowServer ordering on the following UI pass. Relative ordering was replaced with orderFrontRegardless to bring an inactive AppDock window forward reliably.
+- Screen capture used already-granted permission and an exact disposable window number. No existing app windows were attached or changed.
+- Local release packaging and signature verification passed. Physical interaction with the user's own docked apps remains outside these fixture checks.
+
+## Attached-app mouse interaction — 2026-09-10
+
+The automatic-reveal path had placed the full manager window above the external app. The fix keeps the selected app above AppDock, with the opaque backdrop behind both. The frame remains visible around the app, and the inline picker still covers it only while open. Rename keeps its keyboard editor while the manager is ordered below the app; losing key status commits the rename through a deferred callback.
+
+- 36 unit tests, formatting, Clippy and locked builds passed.
+- Native `--pointer-smoke` passed: macOS mouse-down target queries at three app-body points resolved to the exact external window; the tab-strip point resolved to AppDock. The checks passed again after manager movement/resizing, followed by release and restoration.
+- Final `--frame-smoke` passed pointer routing while rename owned the keyboard, inline picker attachment, Ctrl+A/Cmd+A and typing, twelve switches, frame reveal without keyboard transfer, release and restoration.
+- An initial attempt to exercise the old ordering stopped earlier in the fixture because AppDock did not own keyboard focus, so it did not produce a before-fix pointer readback. The new pointer checks pass with the corrected order.
+- Local release packaging and signature verification passed. These checks use disposable windows and read native mouse targets; they do not send mouse events to existing user apps.
+
+This supersedes the earlier validation of above-app/orderFrontRegardless reveal behavior: those keyboard and rendering checks did not verify mouse routing.
+
+## Tab icon containment — 2026-09-10
+
+The tab strip now has an 8-point inset from both window edges, matching the workspace frame. Tab buttons have an additional 4-point leading inset. Explicit clipsToBounds is enabled on the workspace surface, scroll view, clip view and tab document so icon drawing and horizontally scrolled tabs stay within the container. This changes drawing/layout only; the external-app window ordering and mouse routing are unchanged.
+
+Formatting, Clippy with warnings denied, the locked build and all 36 existing tests passed. Local release packaging and signature verification passed. The user's exact Discord screenshot was not recaptured in this check.
+
+## Tab notification badges — 2026-09-10
+
+Added optional Dock-badge mirroring to tabs. Numeric labels render as a small count pill, capped at 99+; other nonempty labels render as a red dot. The original badge remains app-owned and app-wide. The app name retains its label; badge rendering reserves space before the close control.
+
+- The live read-only Swift inspection and the implemented Rust reader both found Discord exposing a dot (`AXStatusLabel = •`). The final Rust diagnostic read Telegram Lite/Spotify with no badge and completed in 30 ms on this run.
+- The [native view-bitmap preview](screenshots/tab-notification-badges.png) was inspected with dummy count 7 and dot values. Both fit inside the tab without overlapping the label or close button. This is not evidence of seven live unread Discord messages.
+- 37 tests passed, including numeric/99+/dot/zero/empty formatting. Formatting, Clippy with warnings denied, locked builds, release packaging and signature verification passed.
+- No messages, notification contents or app settings were read or modified. Badges are best-effort per app, not a universal per-window pending-action detector.
