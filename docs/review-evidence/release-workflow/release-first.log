@@ -1,0 +1,43 @@
+   Compiling serde_core v1.0.229
+   Compiling objc2 v0.6.4
+   Compiling objc2-encode v4.1.0
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling serde v1.0.229
+   Compiling crossbeam-utils v0.8.23
+   Compiling zmij v1.0.23
+   Compiling thiserror v2.0.20
+   Compiling serde_json v1.0.151
+   Compiling unicode-segmentation v1.13.3
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.18
+   Compiling once_cell v1.21.4
+   Compiling crossbeam-channel v0.5.17
+   Compiling block2 v0.6.2
+   Compiling bitflags v2.13.2
+   Compiling dispatch2 v0.3.1
+   Compiling objc2-core-foundation v0.3.2
+   Compiling syn v3.0.5
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling objc2-foundation v0.3.2
+   Compiling objc2-core-video v0.3.2
+   Compiling objc2-core-services v0.3.2
+   Compiling keyboard-types v0.7.0
+   Compiling objc2-metal v0.3.2
+   Compiling objc2-core-image v0.3.2
+   Compiling objc2-cloud-kit v0.3.2
+   Compiling objc2-core-data v0.3.2
+   Compiling objc2-quartz-core v0.3.2
+   Compiling objc2-core-graphics v0.3.2
+   Compiling objc2-core-text v0.3.2
+   Compiling objc2-application-services v0.3.2
+   Compiling objc2-app-kit v0.3.2
+   Compiling global-hotkey v0.7.0
+   Compiling appdock v0.1.0 (/Users/ohaddahan/RustroverProjects/appdock)
+    Finished `release` profile [optimized] target(s) in 18.56s
+real 18.64
+user 41.26
+sys 3.96

@@ -41,14 +41,11 @@ with tempfile.TemporaryDirectory(prefix='appdock-release-tests-') as temporary:
     result, output, calls = run('workflow_dispatch')
     assert result.returncode == 0, result.stderr
     assert 'tag=v0.1.0' in output and sha in output and 'refs/tags/v0.1.0' in calls
-    result, output, calls = run('push')
-    assert result.returncode == 0 and 'tag=\n' in output and not calls
-    result, _, calls = run('push', 'v9.9.9', 'tag')
-    assert result.returncode != 0 and not calls
-    result, _, calls = run('release', 'v0.1.0', 'tag')
-    assert result.returncode != 0 and not calls
+    for event in ['push', 'release', 'pull_request']:
+        result, _, calls = run(event)
+        assert result.returncode != 0 and not calls
     git('tag', '-a', 'v0.1.0', '-m', 'fixture release')
-    for event in ['workflow_dispatch', 'push', 'release']:
+    for event in ['workflow_dispatch']:
         result, output, calls = run(event, 'v0.1.0', 'tag')
         assert result.returncode == 0, (event, result.stderr)
         assert 'tag=v0.1.0' in output and not calls
@@ -62,4 +59,7 @@ with tempfile.TemporaryDirectory(prefix='appdock-release-tests-') as temporary:
     git('commit', '-m', 'version bump')
     result, output, calls = run('workflow_dispatch')
     assert result.returncode == 0 and 'tag=v0.2.0-rc.1' in output and 'refs/tags/v0.2.0-rc.1' in calls
-    print('9 release revision scenarios passed; no remote changes.')
+    manifest.write_text('[package]\nname="appdock"\nversion="invalid"\n')
+    result, _, calls = run('workflow_dispatch')
+    assert result.returncode != 0 and not calls
+    print('8 release revision scenarios passed; no remote changes.')

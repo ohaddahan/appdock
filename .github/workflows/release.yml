@@ -1,18 +1,13 @@
 name: Release
 
 on:
-  push:
-    branches: ['**']
-    tags: ['v*']
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.release.tag_name || github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -26,8 +21,6 @@ defaults:
 
 jobs:
   prepare:
-    # Warm release dependencies on the default branch so later tags can reuse them.
-    if: github.event_name != 'push' || github.ref_type == 'tag' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -38,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.release.tag_name || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Test release revision handling
@@ -47,8 +40,6 @@ jobs:
         id: version
         env:
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_TAG: ${{ github.event.release.tag_name || github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/release-revision.sh
 
@@ -93,7 +84,6 @@ jobs:
       - name: Package release app
         run: scripts/package.sh
       - name: Verify and archive release app
-        if: needs.prepare.outputs.tag != ''
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -105,7 +95,6 @@ jobs:
           cd release-assets
           shasum -a 256 "$archive" > "$archive.sha256"
       - uses: actions/upload-artifact@v7
-        if: needs.prepare.outputs.tag != ''
         with:
           name: appdock-macos-${{ matrix.arch }}
           path: release-assets/*
@@ -115,7 +104,6 @@ jobs:
   publish:
     name: Upload GitHub release assets
     needs: [prepare, build]
-    if: needs.prepare.outputs.tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:
