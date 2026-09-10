@@ -117,6 +117,32 @@ pub fn settle_frame(
     ))
 }
 
+/// AXMinimized can change before a native window exposes its normal controls.
+/// Retry readiness reads, not minimize/restore operations. Hard errors propagate.
+pub fn wait_for_window_ready(
+    current: impl Fn() -> bool,
+    mut poll: impl FnMut() -> Result<bool>,
+    expired: impl Fn() -> bool,
+    mut wait: impl FnMut(),
+) -> Result<()> {
+    loop {
+        if !current() {
+            return Err(BackendError::cancelled());
+        }
+        if expired() {
+            return Err("Window controls did not become ready after restoring. Try selecting the tab again.".into());
+        }
+        if poll()? {
+            return if current() {
+                Ok(())
+            } else {
+                Err(BackendError::cancelled())
+            };
+        }
+        wait();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +303,58 @@ mod tests {
         let mut values = [a, b, a, b, a].into_iter();
         assert!(settle_frame(|| Ok(values.next().unwrap()), || {}).is_err());
         assert_eq!(settle_frame(|| Ok(a), || {}).unwrap(), a);
+    }
+    #[test]
+    fn restored_window_waits_for_delayed_controls_without_repeating_restore() {
+        let polls = Cell::new(0);
+        let waits = Cell::new(0);
+        wait_for_window_ready(
+            || true,
+            || {
+                polls.set(polls.get() + 1);
+                Ok(polls.get() == 3)
+            },
+            || false,
+            || waits.set(waits.get() + 1),
+        )
+        .unwrap();
+        assert_eq!(polls.get(), 3);
+        assert_eq!(waits.get(), 2);
+    }
+    #[test]
+    fn restored_window_readiness_is_bounded_cancellable_and_preserves_ax_errors() {
+        let polls = Cell::new(0);
+        assert!(
+            wait_for_window_ready(
+                || true,
+                || {
+                    polls.set(polls.get() + 1);
+                    Ok(false)
+                },
+                || polls.get() >= 3,
+                || {}
+            )
+            .is_err()
+        );
+        assert_eq!(polls.get(), 3);
+        let current = Cell::new(true);
+        let result = wait_for_window_ready(
+            || current.get(),
+            || {
+                current.set(false);
+                Ok(false)
+            },
+            || false,
+            || {},
+        );
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+        let denied = BackendError {
+            ax_code: Some(-25211),
+            ..BackendError::new(ErrorKind::Permission, "AXMain")
+        };
+        assert_eq!(
+            wait_for_window_ready(|| true, || Err(denied.clone()), || false, || {}).unwrap_err(),
+            denied
+        );
     }
 }

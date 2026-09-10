@@ -1,0 +1,2 @@
+review case=RestoreReady accessibility=true
+Minimized target docked after delayed AXMain readiness, then released to its original minimized state

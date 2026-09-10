@@ -1,0 +1,3 @@
+review case=Animations accessibility=true
+Three-window timing, ms: sequential_startup=2024 original_close=2030 quiet_startup=647 keep_open_close=269 quiet_reopen=129
+All tabs registered; only selected startup window restored; keep-open close preserved all visible windows and their original geometry

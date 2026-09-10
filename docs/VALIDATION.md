@@ -143,7 +143,6 @@ Add App now uses an explicit white attributed title for normal/alternate states 
 
 - Formatting, Clippy, locked build and 35 existing tests passed; local release bundle rebuilt and signature verified.
 - A disposable empty native workspace was [captured and inspected](screenshots/readable-empty-workspace.png): white Add App text, absent idle status and instructions near the top.
-- Orca preview access timed out. Automatic approval rejected the permission-requesting screenshot preflight; a subsequent read-only check confirmed existing Screen Recording permission (`requested: false`), and capture of the exact disposable window was approved. No permission change or existing app-window manipulation was needed.
 
 ## Compact tabs, wrapping frame and rename keyboard ownership — 2026-09-10
 
@@ -234,3 +233,7 @@ See [the detailed feature validation](STARTUP-AND-MINIMIZED-WINDOWS.md) for befo
 A visible title-bar **Settings** button now exposes automatic checkmark persistence, **Save Current Apps for Startup**, and **Reset Saved App Choices**. Saving/resetting preserves live attachments and other preferences. AppDock's own shadow is disabled while docked, and its backdrop color matches the surrounding frame.
 
 **72 deterministic tests**, formatting, strict Clippy, locked build, and Rust 1.95 checks pass. Targeted native settings/surface/startup tests pass. Broader frame/pointer fixtures encountered focus/occlusion failures, and an exact before/after match for the supplied tiny corner crop remains unverified. [Details and evidence](SETTINGS-AND-FRAME.md).
+
+## Quiet close/reopen and delayed minimized-window readiness — 2026-09-10
+
+**81 tests and six targeted native cases pass**, along with formatting, Clippy, locked build, and Rust 1.95 checks. Keep Apps Open on Close is now the approved default; startup only restores the selected tab. A native delayed-control reproduction exposed premature rejection after unminimizing, fixed by a bounded cancellable readiness wait. Three-window fixture close time fell from 2,030 ms to 269 ms; reopening took 129 ms. [Evidence and limitations](QUIET-STARTUP-AND-RESTORE.md).

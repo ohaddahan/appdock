@@ -15,13 +15,13 @@ import time
 parser = argparse.ArgumentParser()
 parser.add_argument('--binary', default='target/debug/appdock')
 parser.add_argument('--output', required=True)
-parser.add_argument('--cases', default='A1,A2,A3,A4,A5,A6,D3,D4,D5,D6,movement,restoration,frame,pointer,rename,disconnected,tracking,Startup,Minimized')
+parser.add_argument('--cases', default='A1,A2,A3,A4,A5,A6,D3,D4,D5,D6,movement,restoration,frame,pointer,rename,disconnected,tracking,Startup,Minimized,Animations,RestoreReady')
 args = parser.parse_args()
 binary = Path(args.binary).resolve()
 out = Path(args.output).resolve()
 out.mkdir(parents=True, exist_ok=True)
 smokes = {'movement': '--movement-fixture', 'restoration': '--restoration-fixture', 'frame': '--frame-smoke', 'pointer': '--pointer-smoke', 'rename': '--rename-smoke', 'disconnected': '--disconnected-smoke', 'tracking': '--tracking-smoke', 'design': '--design-smoke', 'surface': '--surface-smoke', 'settings': '--ui-smoke'}
-review = {'prerequisite', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'D3', 'D4', 'D5', 'D6', 'Minimized', 'Startup', 'Animations'}
+review = {'prerequisite', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'D3', 'D4', 'D5', 'D6', 'Minimized', 'Startup', 'Animations', 'RestoreReady'}
 cases = args.cases.split(',')
 if any(case not in review and case not in smokes for case in cases):
     parser.error('Only disposable review cases and the allowlisted smoke modes are permitted')

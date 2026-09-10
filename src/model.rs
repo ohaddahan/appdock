@@ -164,7 +164,10 @@ pub trait WindowBackend {
     fn focus(&mut self, id: WindowId) -> Result<()>;
     /// Minimized windows can temporarily omit normal docking capabilities.
     /// Validate after restoring, before moving or focusing the target.
-    fn validate_restored_window(&self, id: WindowId) -> Result<()> {
+    fn validate_restored_window(&self, id: WindowId, current: &dyn Fn() -> bool) -> Result<()> {
+        if !current() {
+            return Err(BackendError::cancelled());
+        }
         let state = self.state(id)?;
         if state.minimized || state.fullscreen || state.modal {
             return Err("Window cannot be docked after restoring".into());

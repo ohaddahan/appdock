@@ -540,20 +540,39 @@ impl WindowBackend for MacBackend {
         self.watched.insert(id);
         Ok(())
     }
-    fn validate_restored_window(&self, id: WindowId) -> Result<()> {
+    fn validate_restored_window(&self, id: WindowId, current: &dyn Fn() -> bool) -> Result<()> {
         let entry = self.entry(id)?;
-        let state = AX.state(&entry.element)?;
-        let role = AX.string(&entry.element, "AXRole")?;
-        let subrole = AX.string(&entry.element, "AXSubrole")?;
-        if state.minimized
-            || !discoverable_window(role.as_deref(), subrole.as_deref(), false)
-            || !AX
-                .capabilities(&entry.app, &entry.element, true)?
-                .can_attach(state)
-        {
-            return Err("This restored window does not support docking".into());
-        }
-        Ok(())
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(900);
+        let active = || current() && !self.focus_suspended.load(Ordering::SeqCst);
+        let ax = Ax {
+            current: &active,
+            ..AX
+        };
+        crate::native_ops::wait_for_window_ready(
+            active,
+            || {
+                let state = ax.state(&entry.element)?;
+                if state.fullscreen || state.modal {
+                    return Err(
+                        "Close dialogs and leave fullscreen before docking this restored window"
+                            .into(),
+                    );
+                }
+                if state.minimized {
+                    return Ok(false);
+                }
+                let role = ax.string(&entry.element, "AXRole")?;
+                let subrole = ax.string(&entry.element, "AXSubrole")?;
+                if !discoverable_window(role.as_deref(), subrole.as_deref(), false) {
+                    return Ok(false);
+                }
+                Ok(ax
+                    .capabilities(&entry.app, &entry.element, true)?
+                    .can_attach(state))
+            },
+            || std::time::Instant::now() >= deadline,
+            || std::thread::sleep(std::time::Duration::from_millis(30)),
+        )
     }
     fn focus(&mut self, id: WindowId) -> Result<()> {
         let e = self.entry(id)?;

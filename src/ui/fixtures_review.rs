@@ -64,6 +64,7 @@ pub(crate) fn run(case: &str) -> Result<()> {
             "Minimized",
             "Startup",
             "Animations",
+            "RestoreReady",
         ]
         .contains(&case),
         "Unknown review case",
@@ -143,6 +144,32 @@ fn backend_case(case: &str, pid: i32, dir: &Path) -> Result<()> {
     )?;
     if case == "Animations" {
         return animation_case(backend, &targets);
+    }
+    if case == "RestoreReady" {
+        let window = targets[0].id;
+        backend.minimize(window, true)?;
+        send_target(dir, "delay-ready")?;
+        let mut engine = Engine::new(backend, Workspace::default());
+        let id = engine.attach(None, &targets[0])?;
+        let result = engine.switch(id);
+        require(
+            dir.join("readiness-delayed").exists(),
+            "Native readiness delay hook was not exercised",
+        )?;
+        result?;
+        require(
+            !engine.backend.state(window)?.minimized && engine.selected == Some(id),
+            "Restored window did not enter the dock",
+        )?;
+        engine.release(id)?;
+        require(
+            engine.backend.state(window)?.minimized,
+            "Readiness test lost original minimized state",
+        )?;
+        println!(
+            "Minimized target docked after delayed AXMain readiness, then released to its original minimized state"
+        );
+        return Ok(());
     }
     if case == "Minimized" {
         for target in &targets {
@@ -793,6 +820,7 @@ fn rendered_selection(m: MainThreadMarker, app: &NSApplication) -> Result<()> {
 
 #[derive(Default)]
 struct TargetIvars {
+    ready_after: Cell<Option<Instant>>,
     delayed: Cell<bool>,
     pending: Cell<Option<(NSRect, Instant)>>,
 }
@@ -801,6 +829,20 @@ define_class!(
     struct ReviewWindow;
     unsafe impl NSObjectProtocol for ReviewWindow {}
     impl ReviewWindow {
+        #[unsafe(method(canBecomeMainWindow))]
+        fn can_become_main(&self)->bool {
+            if !self.isMiniaturized() && self.ivars().ready_after.get().is_some_and(|t|Instant::now()<t) {
+                if let Ok(dir)=data_dir(){let _=std::fs::write(dir.join("readiness-delayed"),"Main-window readiness unavailable after unminimizing");}
+                false
+            } else {unsafe {msg_send![super(self),canBecomeMainWindow]}}
+        }
+        #[unsafe(method(accessibilityIsAttributeSettable:))]
+        fn attribute_settable(&self,name:&NSString)->bool {
+            if name.to_string()=="AXMain" && self.ivars().ready_after.get().is_some_and(|t|Instant::now()<t) {
+                if let Ok(dir)=data_dir(){let _=std::fs::write(dir.join("readiness-delayed"),"AXMain unavailable after unminimizing");}
+                false
+            } else { unsafe {msg_send![super(self),accessibilityIsAttributeSettable:name]} }
+        }
         #[unsafe(method(setFrame:display:))]
         fn delayed_frame(&self,frame:NSRect,display:bool) {
             if self.ivars().delayed.get() {
@@ -855,6 +897,14 @@ pub(crate) fn targets() -> Result<()> {
         if let Ok(op) = std::fs::read_to_string(dir.join("command")) {
             std::fs::remove_file(dir.join("command")).map_err(|e| e.to_string())?;
             match op.as_str() {
+                "delay-ready" => {
+                    for window in &windows {
+                        window
+                            .ivars()
+                            .ready_after
+                            .set(Some(Instant::now() + Duration::from_millis(1200)));
+                    }
+                }
                 "delay" => {
                     for w in &windows {
                         w.ivars().delayed.set(true);

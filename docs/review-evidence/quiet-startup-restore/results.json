@@ -1,0 +1,63 @@
+{
+  "started_utc": "2026-09-10T15:32:33.004553+00:00",
+  "environment": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83",
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "baseline_commit": "b250c69347d4d295241625d85500465d42f2497c",
+    "binary": "/Users/ohaddahan/RustroverProjects/appdock/target/debug/appdock",
+    "binary_sha256": "751563f28b24ca14899385d5f127fb05b64d074674651e9244f531b486b2d807"
+  },
+  "cases": [
+    {
+      "id": "prerequisite",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 0.391,
+      "log": "prerequisite.log"
+    },
+    {
+      "id": "RestoreReady",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 2.812,
+      "log": "RestoreReady.log"
+    },
+    {
+      "id": "Minimized",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 3.253,
+      "log": "Minimized.log"
+    },
+    {
+      "id": "Animations",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 8.434,
+      "log": "Animations.log"
+    },
+    {
+      "id": "Startup",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 3.955,
+      "log": "Startup.log"
+    },
+    {
+      "id": "settings",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 3.742,
+      "log": "settings.log"
+    },
+    {
+      "id": "A4",
+      "outcome": "passed",
+      "exit_code": 0,
+      "duration_seconds": 2.068,
+      "log": "A4.log"
+    }
+  ]
+}

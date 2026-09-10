@@ -207,7 +207,8 @@ impl<B: WindowBackend> Engine<B> {
         let prepared: Result<Rect> = (|| {
             if before.minimized {
                 self.backend.minimize(next.window, false)?;
-                self.backend.validate_restored_window(next.window)?;
+                self.backend
+                    .validate_restored_window(next.window, &current)?;
             }
             let frame = self.backend.set_frame(next.window, self.area)?;
             if !current() {
@@ -486,6 +487,7 @@ impl<B: WindowBackend> Engine<B> {
                 if states[&id].minimized {
                     self.backend.minimize(a.window, false)?;
                     a.expected.minimized = false;
+                    self.backend.validate_restored_window(a.window, &|| true)?;
                 }
                 a.expected.frame = self.backend.set_frame(a.window, self.area)?;
                 a.expected.minimized = false;
@@ -607,7 +609,14 @@ pub(crate) mod tests {
                 .minimized = v;
             Ok(())
         }
-        fn validate_restored_window(&self, _id: WindowId) -> Result<()> {
+        fn validate_restored_window(
+            &self,
+            _id: WindowId,
+            current: &dyn Fn() -> bool,
+        ) -> Result<()> {
+            if !current() {
+                return Err(BackendError::cancelled());
+            }
             if self.fail_restored_validation {
                 Err("Restored target is not a dockable standard window".into())
             } else {
@@ -1330,5 +1339,40 @@ pub(crate) mod tests {
             assert_eq!(e.backend.states[&2], external);
             assert!(!e.backend.minimize_calls.iter().any(|(id, _)| *id == 2));
         }
+    }
+    #[test]
+    fn failed_startup_preparation_cannot_discard_an_incomplete_rollback() {
+        let mut engine = Engine::new(Fake::default(), Workspace::default());
+        engine.backend.states.insert(
+            1,
+            WindowState {
+                frame: Rect::default(),
+                minimized: true,
+                fullscreen: false,
+                modal: false,
+            },
+        );
+        engine.backend.fail_focus = true;
+        engine.backend.fail_minimize = true;
+        let window = WindowInfo {
+            id: 1,
+            pid: 10,
+            app: "Fixture".into(),
+            title: "Fixture".into(),
+            identity: Identity {
+                bundle: "fixture".into(),
+                identifier: None,
+            },
+            eligible: true,
+            minimized: true,
+        };
+        assert!(engine.attach_startup(&window, || true).is_err());
+        assert!(!engine.live[&1].deferred_startup);
+        assert!(engine.live[&1].original.minimized);
+        assert!(engine.restore_all().is_err());
+        assert!(engine.live.contains_key(&1));
+        engine.backend.fail_minimize = false;
+        engine.restore_all().unwrap();
+        assert!(engine.backend.states[&1].minimized);
     }
 }
