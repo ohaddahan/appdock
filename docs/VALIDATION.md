@@ -237,3 +237,19 @@ A visible title-bar **Settings** button now exposes automatic checkmark persiste
 ## Quiet close/reopen and delayed minimized-window readiness — 2026-09-10
 
 **81 tests and six targeted native cases pass**, along with formatting, Clippy, locked build, and Rust 1.95 checks. Keep Apps Open on Close is now the approved default; startup only restores the selected tab. A native delayed-control reproduction exposed premature rejection after unminimizing, fixed by a bounded cancellable readiness wait. Three-window fixture close time fell from 2,030 ms to 269 ms; reopening took 129 ms. [Evidence and limitations](QUIET-STARTUP-AND-RESTORE.md).
+
+## Developer ID release workflow (2026-09-10)
+
+Added signing and notarization to both native macOS release jobs using the five
+Apple repository secrets. The workflow requires a valid matching Developer ID
+Application identity, signs the executable and bundle with hardened runtime and
+timestamps, requires Accepted notarization, and staples/validates the ticket and
+checks Gatekeeper before archiving. Temporary credentials are cleaned up after
+success or failure. Local packaging remains unchanged.
+
+Validation: workflow YAML parsed, all 11 embedded shell blocks passed `bash -n`,
+manual-only trigger assertion passed, all eight release revision scenarios passed
+with mocked remote operations, and `git diff --check` passed. No local credentials
+were imported, release triggered, or remote state changed. Actual certificate
+import, notarization acceptance, hosted CI, and downloaded-app launch (including
+Accessibility permission behavior) remain unverified.
