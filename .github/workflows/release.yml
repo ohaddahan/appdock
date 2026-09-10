@@ -2,32 +2,59 @@ name: Release
 
 on:
   push:
+    branches: ['**']
     tags: ['v*']
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing version tag (must match Cargo.toml, e.g. v0.1.0)
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+  group: release-${{ github.event.release.tag_name || github.ref }}
   cancel-in-progress: false
 
 env:
   CARGO_INCREMENTAL: '0'
   RUSTUP_TOOLCHAIN: '1.95.0'
   MACOSX_DEPLOYMENT_TARGET: '12.0'
-  RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
+  prepare:
+    # Warm release dependencies on the default branch so later tags can reuse them.
+    if: github.event_name != 'push' || github.ref_type == 'tag' || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test release revision handling
+        run: python3 scripts/test-release-revision.py
+      - name: Read Cargo version and resolve release revision
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/release-revision.sh
+
   build:
     name: Build macOS (${{ matrix.arch }})
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -36,35 +63,41 @@ jobs:
         include:
           - runner: macos-15
             arch: arm64
+            target: aarch64-apple-darwin
           - runner: macos-15-intel
             arch: x86_64
+            target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
-      - name: Validate version tag
-        run: |
-          python3 - <<'PY'
-          import os, re, tomllib
-          with open('Cargo.toml', 'rb') as f:
-              version = tomllib.load(f)['package']['version']
-          tag = os.environ['RELEASE_TAG']
-          if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', tag) or tag != f'v{version}':
-              raise SystemExit(f'Tag {tag!r} must equal v{version} and use a release version')
-          PY
       - name: Install Rust
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.runner }}-${{ matrix.target }}
+          cache-bin: false
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST MACOSX_DEPLOYMENT_TARGET SDKROOT
+      - name: Verify native target
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$EXPECTED_TARGET"
       - name: Check and test
         run: |
           cargo fmt --all --check
           cargo test --all-features --locked
           cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: Package release app
+        run: scripts/package.sh
+      - name: Verify and archive release app
+        if: needs.prepare.outputs.tag != ''
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          scripts/package.sh
           lipo -verify_arch "$EXPECTED_ARCH" dist/AppDock.app/Contents/MacOS/AppDock
           mkdir -p release-assets
           archive="AppDock-${RELEASE_TAG}-macos-${EXPECTED_ARCH}.zip"
@@ -72,18 +105,26 @@ jobs:
           cd release-assets
           shasum -a 256 "$archive" > "$archive.sha256"
       - uses: actions/upload-artifact@v7
+        if: needs.prepare.outputs.tag != ''
         with:
           name: appdock-macos-${{ matrix.arch }}
           path: release-assets/*
           if-no-files-found: error
+          retention-days: 7
 
   publish:
     name: Upload GitHub release assets
-    needs: build
+    needs: [prepare, build]
+    if: needs.prepare.outputs.tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    concurrency:
+      group: publish-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -92,7 +133,10 @@ jobs:
           path: release-assets
       - name: Verify downloaded archives
         working-directory: release-assets
-        run: sha256sum --check ./*.sha256
+        run: |
+          test -f "AppDock-${RELEASE_TAG}-macos-arm64.zip"
+          test -f "AppDock-${RELEASE_TAG}-macos-x86_64.zip"
+          sha256sum --check ./*.sha256
       - name: Create release if needed and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -101,6 +145,9 @@ jobs:
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             args=()
             if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
-            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes "${args[@]}"
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes "${args[@]}"
           fi
           gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          if [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" == true ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi

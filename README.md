@@ -21,14 +21,9 @@ open dist/AppDock.app
 
 The `Release` workflow builds native macOS Apple Silicon (`arm64`) and Intel (`x86_64`) apps with Rust 1.95.0, runs deterministic tests and lint checks on both architectures, and uploads an `AppDock-vVERSION-macos-ARCH.zip` plus its SHA-256 checksum to the GitHub Release. Each ZIP contains `AppDock.app`. No Docker or additional repository secrets are required; publishing uses the repository's `GITHUB_TOKEN`.
 
-Commit the desired version in `Cargo.toml` and the release workflow before tagging that commit:
+Set and commit the app version in `Cargo.toml`, then use **Actions → Release → Run workflow** and select the desired branch or revision. There is **no version/tag input**. The workflow derives `vVERSION` from the checked-out manifest, creates that tag if needed, and builds both architectures from the same immutable commit. An existing tag pointing to a different commit is rejected; bump the Cargo version before releasing new code under a new tag.
 
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The tag must match `Cargo.toml`. A pushed `v*` tag creates the release after both builds succeed. Publishing a release for an existing matching tag also triggers builds. For a retry, use **Actions → Release → Run workflow** and enter the existing tag. Manual runs build the tag's source. Repeated runs replace the same named assets; existing release notes are preserved. Tags containing a prerelease suffix create prereleases.
+Pushed `v*` tags and published releases remain supported and must match the manifest. Default-branch pushes build without publishing to warm Rust dependency/build caches for later tag releases. Caches separate architecture, toolchain, compiler environment, and dependency state. The normal macOS checks workflow also caches both installed Rust toolchains. Repeated runs of the same release replace its named assets while preserving release notes.
 
 The app bundles use ad-hoc signing, as local packages do; they are not Developer ID signed or notarized, so macOS may block downloaded builds pending user approval. Hosted tests do not validate Accessibility permission or live desktop interactions. macOS 12 is the declared deployment minimum; release CI runs on macOS 15 and does not prove compatibility with every older version.
 

@@ -4,20 +4,32 @@ on:
   pull_request:
 permissions:
   contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  RUSTUP_TOOLCHAIN: stable
 jobs:
   deterministic:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Install stable Rust
-        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Test release revision handling
+        run: python3 scripts/test-release-revision.py
+      - name: Install Rust toolchains
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup toolchain install 1.95.0 --profile minimal
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: checks-${{ runner.os }}-${{ runner.arch }}
+          cache-bin: false
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST MACOSX_DEPLOYMENT_TARGET SDKROOT
       - run: cargo +stable fmt --check
       - run: cargo +stable test --all-features --locked
       - run: cargo +stable clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo +stable build --all-features --locked
       - name: Check declared minimum Rust version
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
           python3 -c 'import tomllib; assert tomllib.load(open("Cargo.toml", "rb"))["package"]["rust-version"] == "1.95"'
           cargo +1.95.0 check --all-targets --all-features --locked
