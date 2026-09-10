@@ -228,6 +228,7 @@ struct Ivars {
     rename_blur_requested: Cell<bool>,
     startup_menu: OnceCell<Retained<NSMenu>>,
     startup_menu_signature: RefCell<String>,
+    settings_tracking: Cell<bool>,
 }
 struct Ui {
     fixture: fixtures::FixtureState,
@@ -247,6 +248,8 @@ struct Ui {
     picker: crate::picker::InlinePicker,
     picker_open: bool,
     pending_picker: bool,
+    pending_settings: bool,
+    settings_button: Retained<NSButton>,
     replacement: Option<TabId>,
     editing: Option<TabId>,
     tab_signature: String,
@@ -291,6 +294,10 @@ define_class!(
         #[unsafe(method(applicationShouldTerminate:))] fn should_terminate(&self,_:&NSApplication)->NSApplicationTerminateReply {
             if self.ivars().ui.borrow().as_ref().is_none_or(|u|u.client.snapshot.lock().unwrap().stopped) { NSApplicationTerminateReply::TerminateNow } else { self.close_request();NSApplicationTerminateReply::TerminateCancel }
         }
+    }
+    unsafe impl NSMenuDelegate for Delegate {
+        #[unsafe(method(menuWillOpen:))] fn settings_opened(&self,_:&NSMenu){self.ivars().settings_tracking.set(true);}
+        #[unsafe(method(menuDidClose:))] fn settings_closed(&self,_:&NSMenu){self.ivars().settings_tracking.set(false);}
     }
     unsafe impl NSWindowDelegate for Delegate {
         #[unsafe(method_id(windowWillReturnFieldEditor:toObject:))]
@@ -351,6 +358,10 @@ define_class!(
         #[unsafe(method(permission:))] fn permission(&self,_:&AnyObject){if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::RequestPermission);}let url=objc2_foundation::NSURL::URLWithString(&NSString::from_str("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")).unwrap();NSWorkspace::sharedWorkspace().openURL(&url);}
         #[unsafe(method(spaceChanged:))] fn space(&self,_:&NSNotification){if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::Pause);}}
         #[unsafe(method(dragTab:))] fn drag(&self,sender:&NSPanGestureRecognizer){if sender.state()==NSGestureRecognizerState::Ended && let Some(view)=sender.view(){let b=self.ivars().ui.borrow();if let Some(u)=b.as_ref(){let id=view.tag() as u64;let point=sender.locationInView(Some(&u.tabs));let index=(point.x/TAB_WIDTH).max(0.) as usize;u.client.send(Command::Reorder(id,index));}}}
+        #[unsafe(method(closeSettingsFixture:))] fn close_settings_fixture(&self,_:&NSTimer){self.finish_settings_fixture();}
+        #[unsafe(method(showSettings:))] fn settings(&self,_:&AnyObject) {self.show_settings();}
+        #[unsafe(method(saveStartupApps:))] fn save_apps(&self,_:&AnyObject) {if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::SaveStartupApps);}}
+        #[unsafe(method(resetStartupApps:))] fn reset_apps(&self,_:&AnyObject) {if let Some(u)=self.ivars().ui.borrow().as_ref(){u.client.send(Command::ResetStartupApps);}}
         #[unsafe(method(toggleStartupApp:))] fn toggle_startup(&self,sender:&NSMenuItem) {
             let Some(bundle)=sender.representedObject().and_then(|o|o.downcast::<NSString>().ok()).map(|s|s.to_string()) else {return};
             if let Some(u)=self.ivars().ui.borrow().as_ref() {
@@ -484,7 +495,7 @@ impl Delegate {
         title.setFrameOrigin(NSPoint::new(8., (24. - title_size.height) / 2.));
         let add_x = 8. + title_size.width + 12.;
         let titlebar_view =
-            NSView::initWithFrame(NSView::alloc(m), rect(0., 0., add_x + 108., 24.));
+            NSView::initWithFrame(NSView::alloc(m), rect(0., 0., add_x + 206., 24.));
         titlebar_view.addSubview(&title);
         let add = self.button("+ Add App", sel!(addWindow:), rect(add_x, 0., 100., 24.));
         add.setFont(Some(&theme::font(13.)));
@@ -509,6 +520,23 @@ impl Delegate {
         add.setAttributedAlternateTitle(&add_title);
         add.setToolTip(Some(&NSString::from_str("Add an existing app window")));
         titlebar_view.addSubview(&add);
+        let settings = self.button(
+            "Settings",
+            sel!(showSettings:),
+            rect(add_x + 108., 0., 90., 24.),
+        );
+        settings.setBordered(true);
+        settings.setBezelStyle(NSBezelStyle::AccessoryBarAction);
+        settings.setBezelColor(Some(&theme::color(theme::BORDER)));
+        let settings_title = unsafe {
+            NSAttributedString::new_with_attributes(&NSString::from_str("Settings"), &attributes)
+        };
+        settings.setAttributedTitle(&settings_title);
+        settings.setAttributedAlternateTitle(&settings_title);
+        settings.setToolTip(Some(&NSString::from_str(
+            "Save or reset startup app choices",
+        )));
+        titlebar_view.addSubview(&settings);
         titlebar.setView(&titlebar_view);
         window.addTitlebarAccessoryViewController(&titlebar);
         let height = NSScreen::screens(m)
@@ -643,6 +671,8 @@ impl Delegate {
             picker,
             picker_open: false,
             pending_picker: false,
+            pending_settings: false,
+            settings_button: settings.clone(),
             replacement: None,
             editing: None,
             tab_signature: String::new(),
@@ -721,6 +751,7 @@ impl Delegate {
         }
         let startup = NSMenu::new(m);
         startup.setAutoenablesItems(false);
+        startup.setDelegate(Some(ProtocolObject::from_ref(self)));
         let startup_item = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(m),
@@ -731,6 +762,18 @@ impl Delegate {
         };
         startup_item.setSubmenu(Some(&startup));
         self.ivars().startup_menu.set(startup).unwrap();
+        let settings_item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(m),
+                &NSString::from_str("Settings…"),
+                Some(sel!(showSettings:)),
+                &NSString::from_str(","),
+            )
+        };
+        unsafe {
+            settings_item.setTarget(Some(self));
+        }
+        submenu.addItem(&settings_item);
         submenu.addItem(&startup_item);
         submenu.addItem(&NSMenuItem::separatorItem(m));
         submenu.addItem(&retry);
@@ -739,6 +782,14 @@ impl Delegate {
         menu.addItem(&root);
         app.setMainMenu(Some(&menu));
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        // Set the Dock icon after launch and activation-policy setup: AppKit can
+        // replace an icon assigned before app.run() with the executable default.
+        let icon_data = NSData::with_bytes(include_bytes!("../assets/branding/appdock.png"));
+        let icon = NSImage::initWithData(NSImage::alloc(), &icon_data)
+            .expect("embedded AppDock logo must be a valid image");
+        // SAFETY: A valid image is supplied; this never passes None.
+        unsafe { app.setApplicationIconImage(Some(&icon)) };
+        app.dockTile().display();
         window.makeKeyAndOrderFront(None);
         if std::env::args().any(|a| {
             matches!(
@@ -769,7 +820,35 @@ impl Delegate {
             self.close_request();
         }
     }
+    fn show_settings(&self) {
+        self.dismiss_picker(false);
+        self.finish_rename(true);
+        let mut b = self.ivars().ui.borrow_mut();
+        let Some(u) = b.as_mut() else { return };
+        u.pending_settings = true;
+        u.editing_focus_pending = Some(u.client.set_text_editing(true));
+    }
+    fn open_settings(&self, button: &NSButton, client: &Client) {
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
+        if let Some(window) = button.window() {
+            window.makeKeyAndOrderFront(None);
+        }
+        self.arm_settings_fixture();
+        if let Some(menu) = self.ivars().startup_menu.get() {
+            menu.popUpMenuPositioningItem_atLocation_inView(
+                None,
+                NSPoint::new(0., button.bounds().size.height),
+                Some(button),
+            );
+        }
+        client.set_text_editing(false);
+        client.send(Command::Raise);
+    }
     fn update_startup_menu(&self, snapshot: &worker::Snapshot) {
+        if self.ivars().settings_tracking.get() {
+            return;
+        }
         let Some(menu) = self.ivars().startup_menu.get() else {
             return;
         };
@@ -783,16 +862,46 @@ impl Delegate {
             apps.entry(app.bundle.clone())
                 .or_insert_with(|| app.name.clone());
         }
-        let signature = format!("{apps:?}{:?}", snapshot.workspace.startup_apps);
+        let can_save = snapshot.workspace.tabs.iter().any(|tab| {
+            !tab.identity.bundle.is_empty() && snapshot.live.iter().any(|(id, _)| *id == tab.id)
+        });
+        let signature = format!("{apps:?}{:?}{can_save}", snapshot.workspace.startup_apps);
         if *self.ivars().startup_menu_signature.borrow() == signature {
             return;
         }
         *self.ivars().startup_menu_signature.borrow_mut() = signature;
         menu.removeAllItems();
+        for (title, action, enabled) in [
+            (
+                "Save Current Apps for Startup",
+                sel!(saveStartupApps:),
+                can_save,
+            ),
+            (
+                "Reset Saved App Choices",
+                sel!(resetStartupApps:),
+                !snapshot.workspace.startup_apps.is_empty(),
+            ),
+        ] {
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(self.mtm()),
+                    &NSString::from_str(title),
+                    Some(action),
+                    &NSString::from_str(""),
+                )
+            };
+            unsafe {
+                item.setTarget(Some(self));
+            }
+            item.setEnabled(enabled);
+            menu.addItem(&item);
+        }
+        menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
         let hint = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(self.mtm()),
-                &NSString::from_str("Checked apps are added when AppDock starts."),
+                &NSString::from_str("Checkmarks save automatically for the next startup."),
                 None,
                 &NSString::from_str(""),
             )
@@ -1040,6 +1149,14 @@ impl Delegate {
                 self.open_rename(id);
                 return;
             }
+            if u.pending_settings {
+                u.pending_settings = false;
+                let button = u.settings_button.clone();
+                let client = u.client.clone();
+                drop(b);
+                self.open_settings(&button, &client);
+                return;
+            }
             if u.pending_picker {
                 u.pending_picker = false;
                 drop(b);
@@ -1052,6 +1169,7 @@ impl Delegate {
             && u.pending_rename.is_none()
             && !u.picker_open
             && !u.pending_picker
+            && !u.pending_settings
             && !u.window.inLiveResize()
             && NSEvent::pressedMouseButtons() == 0
             && !self.ivars().dragging.get()
@@ -1106,6 +1224,11 @@ impl Delegate {
         let attached = std::env::args().any(|a| a == "--surface-smoke")
             || s.selected
                 .is_some_and(|id| s.live.iter().any(|(tab, _)| *tab == id));
+        // A non-opaque controls window can cast a second shadow along its
+        // rectangular cutout, visible around the target's rounded corners.
+        if u.window.hasShadow() == attached {
+            u.window.setHasShadow(!attached);
+        }
         u.surface.set_attached(attached && !u.picker_open);
         u.hint.setHidden(attached || u.picker_open);
         if self.ivars().raise_requested.replace(false) {
@@ -1120,6 +1243,7 @@ impl Delegate {
             && !u.window.inLiveResize()
             && !u.picker_open
             && !u.pending_picker
+            && !u.pending_settings
             && u.rename_editor.is_none()
             && u.pending_rename.is_none()
         {
@@ -1214,6 +1338,7 @@ impl Delegate {
             && !s.quitting
             && !u.picker_open
             && !u.pending_picker
+            && !u.pending_settings
             && u.rename_editor.is_none()
             && u.pending_rename.is_none()
             && !u.window.isMiniaturized()
@@ -1314,6 +1439,7 @@ impl Delegate {
                 && u.pending_rename.is_none()
                 && !u.picker_open
                 && !u.pending_picker
+                && !u.pending_settings
                 && e.state == HotKeyState::Pressed
                 && !s.workspace.tabs.is_empty()
             {
@@ -1455,6 +1581,7 @@ impl Delegate {
             let Some(u) = b.as_mut() else {
                 return;
             };
+            u.pending_settings = false;
             u.replacement = if replace { u.editing } else { None };
             if replace && u.replacement.is_none() {
                 return;
@@ -1586,6 +1713,7 @@ impl Delegate {
             {
                 return;
             }
+            u.pending_settings = false;
             u.editing = Some(id);
             u.pending_rename = Some(id);
             u.editing_focus_pending = Some(u.client.set_text_editing(true));
@@ -1692,7 +1820,12 @@ impl Delegate {
         }
     }
     fn close_request(&self) {
-        if let Some(u) = self.ivars().ui.borrow().as_ref() {
+        if let Some(u) = self.ivars().ui.borrow_mut().as_mut() {
+            if u.pending_settings {
+                u.pending_settings = false;
+                u.editing_focus_pending = None;
+                u.client.set_text_editing(false);
+            }
             u.client.send(Command::Quit);
         }
     }
@@ -1701,12 +1834,6 @@ pub fn run() {
     let m = MainThreadMarker::new().expect("AppDock must start on the main thread");
     let app = NSApplication::sharedApplication(m);
     let delegate = Delegate::new(m);
-    // Direct launches (including cargo run) have no bundle icon metadata.
-    let icon_data = NSData::with_bytes(include_bytes!("../assets/branding/appdock.png"));
-    let icon = NSImage::initWithData(NSImage::alloc(), &icon_data)
-        .expect("embedded AppDock logo must be a valid image");
-    // SAFETY: A valid image is supplied; this never passes None.
-    unsafe { app.setApplicationIconImage(Some(&icon)) };
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.run();
 }

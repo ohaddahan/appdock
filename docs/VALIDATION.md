@@ -249,3 +249,9 @@ The new baseline is **71 passing deterministic tests**, with formatting, strict 
 A failing native reproduction found ordinary minimized windows exposing an `AXDialog` subrole and read-only `AXMain`. Discovery now includes these minimized windows and validates full docking capabilities after restoring them. Native tests cover discovery with fresh handles, startup across repeated launches, restoring original minimization, disabling saved rules, and the actual menu toggle.
 
 See [the detailed feature validation](STARTUP-AND-MINIMIZED-WINDOWS.md) for before/after evidence, test manifests, and the retained intermittent picker-focus failure. WhatsApp/Spotify and other existing user windows were not changed. No installed app or deployment was modified.
+
+## Visible Settings, saving/resetting apps, and corner framing — 2026-09-10
+
+A visible title-bar **Settings** button now exposes automatic checkmark persistence, **Save Current Apps for Startup**, and **Reset Saved App Choices**. Saving/resetting preserves live attachments and other preferences. AppDock's own shadow is disabled while docked, and its backdrop color matches the surrounding frame.
+
+**72 deterministic tests**, formatting, strict Clippy, locked build, and Rust 1.95 checks pass. Targeted native settings/surface/startup tests pass. Broader frame/pointer fixtures encountered focus/occlusion failures, and an exact before/after match for the supplied tiny corner crop remains unverified. [Details and evidence](SETTINGS-AND-FRAME.md).

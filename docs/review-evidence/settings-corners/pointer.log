@@ -1,0 +1,16 @@
+Disposable frame target process: 61719
+Preview window ID: 63397
+Inline picker visible: 63397
+Inline picker visible: 63397
+Integrated inline picker attachment submitted
+Inline picker visible: 63397
+Inline picker visible: 63397
+Integrated inline picker attachment submitted
+Native pointer routing passed: app content targets the external app; tab controls target AppDock
+Direct app focus brought AppDock forward without taking keyboard focus
+
+thread 'main' (27296528) panicked at src/ui/fixtures.rs:643:9:
+assertion `left == right` failed: AppDock controls are not clickable
+  left: 58503
+ right: 63397
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

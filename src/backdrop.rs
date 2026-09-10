@@ -39,7 +39,9 @@ impl Backdrop {
             window.setReleasedWhenClosed(false);
         }
         window.setOpaque(true);
-        window.setBackgroundColor(Some(&theme::color(theme::SURFACE)));
+        // The backing must match the surrounding frame where rounded native
+        // corners expose it; a darker rectangle creates visible corner wedges.
+        window.setBackgroundColor(Some(&theme::color(theme::WINDOW)));
         window.setHasShadow(false);
         window.setAnimationBehavior(NSWindowAnimationBehavior::None);
         Self {

@@ -19,6 +19,7 @@ pub(super) struct FixtureState {
     pub(super) fixture_reveal_ordered: bool,
     pub(super) fixture_keyboard_ready: bool,
     pub(super) startup_menu_stage: u8,
+    pub(super) settings_popup_stage: u8,
 }
 impl Drop for FixtureState {
     fn drop(&mut self) {
@@ -29,6 +30,58 @@ impl Drop for FixtureState {
     }
 }
 impl Delegate {
+    pub(super) fn arm_settings_fixture(&self) {
+        let testing = {
+            let mut b = self.ivars().ui.borrow_mut();
+            b.as_mut().is_some_and(|u| {
+                if u.fixture.settings_popup_stage == 1 {
+                    u.fixture.settings_popup_stage = 2;
+                    true
+                } else {
+                    false
+                }
+            })
+        };
+        if !testing {
+            return;
+        }
+        let timer = unsafe {
+            NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+                0.25,
+                self,
+                sel!(closeSettingsFixture:),
+                None,
+                false,
+            )
+        };
+        unsafe {
+            objc2_foundation::NSRunLoop::mainRunLoop()
+                .addTimer_forMode(&timer, objc2_foundation::NSRunLoopCommonModes);
+        }
+    }
+    pub(super) fn finish_settings_fixture(&self) {
+        assert!(
+            self.ivars().settings_tracking.get(),
+            "Settings popup never entered native menu tracking"
+        );
+        let menu = self.ivars().startup_menu.get().unwrap();
+        assert!(
+            menu.indexOfItemWithTitle(&NSString::from_str("Save Current Apps for Startup")) >= 0
+        );
+        assert!(menu.indexOfItemWithTitle(&NSString::from_str("Reset Saved App Choices")) >= 0);
+        self.ivars()
+            .ui
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .fixture
+            .settings_popup_stage = 3;
+        println!(
+            "Visible Settings button opened the native menu after the focus barrier; Save and Reset actions are present"
+        );
+        menu.cancelTracking();
+    }
+
     pub(super) fn fixture_picker_step<'a>(
         &self,
         count: u64,
@@ -213,6 +266,25 @@ impl Delegate {
         s: &Snapshot,
     ) -> Option<RefMut<'a, Option<Ui>>> {
         let u = b.as_mut()?;
+        if std::env::var_os("APPDOCK_SETTINGS_SMOKE").is_some() {
+            if count == 2 {
+                assert!(!u.settings_button.isHidden());
+                assert!(u.settings_button.isEnabled());
+                u.fixture.settings_popup_stage = 1;
+                let button = u.settings_button.clone();
+                drop(b);
+                unsafe {
+                    button.performClick(None);
+                }
+                return None;
+            }
+            if count == 19 {
+                assert_eq!(
+                    u.fixture.settings_popup_stage, 3,
+                    "Settings popup did not complete"
+                );
+            }
+        }
         if count == 8
             && std::env::args().any(|a| {
                 matches!(
@@ -228,6 +300,10 @@ impl Delegate {
                 .expect("Native bitmap unavailable");
             view.cacheDisplayInRect_toBitmapImageRep(bounds, &bitmap);
             if std::env::args().any(|a| a == "--surface-smoke") {
+                assert!(
+                    !u.window.hasShadow(),
+                    "Docked controls still cast a shadow around the cutout"
+                );
                 let w = bitmap.pixelsWide();
                 let h = bitmap.pixelsHigh();
                 let alpha = |y| bitmap.colorAtX_y(w / 2, y).unwrap().alphaComponent();
@@ -362,6 +438,24 @@ impl Delegate {
                         if std::env::args().any(|a| a == "--pointer-smoke") {
                             u.fixture.dock_test_stage = 14;
                             u.fixture.dock_test_tick = count;
+                            return None;
+                        }
+                        assert!(
+                            !u.window.hasShadow(),
+                            "Docked workspace retained an extra shadow around its transparent cutout"
+                        );
+                        if u.fixture.settings_popup_stage == 0 {
+                            assert!(!u.settings_button.isHidden());
+                            assert!(u.settings_button.isEnabled());
+                            u.fixture.settings_popup_stage = 1;
+                            let button = u.settings_button.clone();
+                            drop(b);
+                            unsafe {
+                                button.performClick(None);
+                            }
+                            return None;
+                        }
+                        if u.fixture.settings_popup_stage < 3 {
                             return None;
                         }
                         if u.fixture.startup_menu_stage < 2 {

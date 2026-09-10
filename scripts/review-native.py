@@ -20,7 +20,7 @@ args = parser.parse_args()
 binary = Path(args.binary).resolve()
 out = Path(args.output).resolve()
 out.mkdir(parents=True, exist_ok=True)
-smokes = {'movement': '--movement-fixture', 'restoration': '--restoration-fixture', 'frame': '--frame-smoke', 'pointer': '--pointer-smoke', 'rename': '--rename-smoke', 'disconnected': '--disconnected-smoke', 'tracking': '--tracking-smoke', 'design': '--design-smoke'}
+smokes = {'movement': '--movement-fixture', 'restoration': '--restoration-fixture', 'frame': '--frame-smoke', 'pointer': '--pointer-smoke', 'rename': '--rename-smoke', 'disconnected': '--disconnected-smoke', 'tracking': '--tracking-smoke', 'design': '--design-smoke', 'surface': '--surface-smoke', 'settings': '--ui-smoke'}
 review = {'prerequisite', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'D3', 'D4', 'D5', 'D6', 'Minimized', 'Startup'}
 cases = args.cases.split(',')
 if any(case not in review and case not in smokes for case in cases):
@@ -42,6 +42,8 @@ def run(case):
     log = out / (case + '.log')
     with tempfile.TemporaryDirectory(prefix='appdock-review-') as data:
         env = dict(os.environ, APPDOCK_DATA_DIR=data, APPDOCK_SMOKE_SCREENSHOT=str(out / (case + '.png')))
+        if case == 'settings':
+            env.update(APPDOCK_SETTINGS_SMOKE='1', APPDOCK_SMOKE_TICKS='20')
         with log.open('w') as handle:
             process = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT, env=env, start_new_session=True)
             try:

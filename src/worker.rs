@@ -40,6 +40,8 @@ pub enum Command {
     Attach(Option<TabId>, WindowId),
     AutoAttach(WindowId),
     SetStartupApp(StartupApp, bool),
+    SaveStartupApps,
+    ResetStartupApps,
     Switch(TabId, u64),
     Resize(Rect, Rect),
     Rename(TabId, String),
@@ -199,6 +201,8 @@ impl Client {
                 | Command::Release(_)
                 | Command::Attach(..)
                 | Command::SetStartupApp(..)
+                | Command::SaveStartupApps
+                | Command::ResetStartupApps
         ) {
             self.generation.fetch_add(1, Ordering::SeqCst);
             self.requested_tab.lock().unwrap().take();
@@ -299,6 +303,8 @@ pub fn start(workspace: Workspace) -> Client {
                 Some(
                     Command::Attach(..)
                         | Command::SetStartupApp(..)
+                        | Command::SaveStartupApps
+                        | Command::ResetStartupApps
                         | Command::Switch(..)
                         | Command::Release(_)
                         | Command::Pause
@@ -363,6 +369,16 @@ pub fn start(workspace: Workspace) -> Client {
                             windows = w;
                             discovery_complete = true;
                         })
+                }
+                Some(Command::SaveStartupApps) => {
+                    engine.save_startup_apps(&windows);
+                    dirty = true;
+                    Ok(())
+                }
+                Some(Command::ResetStartupApps) => {
+                    engine.reset_startup_apps();
+                    dirty = true;
+                    Ok(())
                 }
                 Some(Command::SetStartupApp(app, enabled)) => {
                     dirty = true;

@@ -85,3 +85,11 @@ References: [Apple’s Dock badge label property](https://developer.apple.com/do
 The native reproduction showed normal minimized NSWindows reporting `AXWindow` / `AXDialog` with read-only `AXMain`. Discovery accepts this subrole only when `AXMinimized` is true, geometry is valid, no fullscreen/modal state is active, and restoring is supported. Movement/focus capabilities may be temporarily unavailable while minimized. Picker rows label this state.
 
 `Engine::switch_current` preserves the original minimized snapshot, restores the target, and calls `validate_restored_window` before moving or focusing it. That validation requires the normal standard-window role and full docking capabilities, and propagates native errors with their AX codes. A failed validation rolls back and retains the restoration snapshot. Non-minimized dialogs remain excluded. No discovery scan restores windows merely to inspect them.
+
+## Visible app settings
+
+A title-bar Settings button and AppDock's Settings menu item (Command-comma) open the existing startup menu after the editing/focus barrier acknowledges outstanding native focus work. The menu tracks opening/closing independently of the UI RefCell; its contents are not rebuilt while tracking. New picker, rename, and quit intents cancel a pending Settings popup. Native fixture stages exercise the actual button and popup with a bounded tracking-mode close timer.
+
+`SaveStartupApps` derives a distinct list of live app bundles in tab order, and `ResetStartupApps` clears only that list. Both run and persist on the worker and cancel pending startup jobs. Neither alters attachments, restoration snapshots, geometry, or shortcuts. Successful changes leave the normal status row collapsed, avoiding a geometry change caused by a confirmation message.
+
+The controls window disables its shadow while attached, avoiding an additional shadow along the rectangular transparent cutout. The opaque backdrop uses the same WINDOW palette color as the surrounding frame, so exposed native rounded corners do not reveal a differently colored backing rectangle. The external window's own appearance is unchanged.

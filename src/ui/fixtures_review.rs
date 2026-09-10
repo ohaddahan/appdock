@@ -530,6 +530,36 @@ fn startup_case(pid: i32, dir: &Path, mut backend: MacBackend) -> Result<()> {
     )?;
     let client = launch(next);
     wait_snapshot(&client, |s| s.live.len() == 1 && s.selected.is_some())?;
+    let before_settings = backend.state(window)?;
+    client.send(Command::ResetStartupApps);
+    let reset = wait_snapshot(&client, |s| s.workspace.startup_apps.is_empty())?;
+    require(
+        reset.live.len() == 1 && reset.selected.is_some(),
+        "Reset released a current attachment",
+    )?;
+    require(
+        backend.state(window)? == before_settings,
+        "Reset changed a docked window",
+    )?;
+    require(
+        persistence::load(&persistence::path())?
+            .startup_apps
+            .is_empty(),
+        "Reset was not saved",
+    )?;
+    client.send(Command::SaveStartupApps);
+    let saved = wait_snapshot(&client, |s| s.workspace.startup_apps == vec![rule.clone()])?;
+    require(
+        saved.live.len() == 1 && backend.state(window)? == before_settings,
+        "Saving app choices changed a docked window",
+    )?;
+    require(
+        persistence::load(&persistence::path())?.startup_apps == vec![rule.clone()],
+        "Current apps were not saved",
+    )?;
+    println!(
+        "Save Current Apps and Reset Saved App Choices persisted without changing live windows"
+    );
     client.send(Command::SetStartupApp(rule, false));
     wait_snapshot(&client, |s| s.workspace.startup_apps.is_empty())?;
     client.send(Command::Quit);

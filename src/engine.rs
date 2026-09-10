@@ -113,6 +113,34 @@ impl<B: WindowBackend> Engine<B> {
         self.backend.watch(window.id, true);
         Ok(id)
     }
+    /// Save the current live apps in tab order, once per bundle. Preferences do
+    /// not contain live handles and changing them never changes attachments.
+    pub fn save_startup_apps(&mut self, windows: &[WindowInfo]) {
+        let mut apps = Vec::<StartupApp>::new();
+        for tab in &self.workspace.tabs {
+            let Some(attachment) = self.live.get(&tab.id) else {
+                continue;
+            };
+            if tab.identity.bundle.is_empty()
+                || apps.iter().any(|app| app.bundle == tab.identity.bundle)
+            {
+                continue;
+            }
+            let name = windows
+                .iter()
+                .find(|window| window.id == attachment.window)
+                .map_or(&tab.name, |window| &window.app)
+                .clone();
+            apps.push(StartupApp {
+                bundle: tab.identity.bundle.clone(),
+                name,
+            });
+        }
+        self.workspace.startup_apps = apps;
+    }
+    pub fn reset_startup_apps(&mut self) {
+        self.workspace.startup_apps.clear();
+    }
     pub fn switch(&mut self, id: TabId) -> Result<()> {
         self.switch_current(id, || true)
     }
@@ -1103,5 +1131,43 @@ pub(crate) mod tests {
         assert!(!e.backend.states[&2].minimized);
         e.release(2).unwrap();
         assert_eq!(e.backend.states[&2], before);
+    }
+    #[test]
+    fn save_and_reset_startup_choices_do_not_change_live_windows_or_other_preferences() {
+        let mut e = fixture();
+        e.switch(1).unwrap();
+        e.workspace.startup_apps.push(StartupApp {
+            bundle: "old.app".into(),
+            name: "Old".into(),
+        });
+        let states = e.backend.states.clone();
+        let geometry = e.workspace.geometry;
+        let selected = e.selected;
+        let shortcuts = (
+            e.workspace.next_shortcut.clone(),
+            e.workspace.previous_shortcut.clone(),
+        );
+        e.save_startup_apps(&[]);
+        assert_eq!(
+            e.workspace.startup_apps,
+            vec![StartupApp {
+                bundle: "same".into(),
+                name: "same".into()
+            }]
+        );
+        e.reset_startup_apps();
+        assert!(e.workspace.startup_apps.is_empty());
+        assert_eq!(e.backend.states, states);
+        assert_eq!(e.live.len(), 2);
+        assert_eq!(e.workspace.tabs.len(), 2);
+        assert_eq!(e.selected, selected);
+        assert_eq!(e.workspace.geometry, geometry);
+        assert_eq!(
+            (
+                e.workspace.next_shortcut.clone(),
+                e.workspace.previous_shortcut.clone()
+            ),
+            shortcuts
+        );
     }
 }
